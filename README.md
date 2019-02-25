@@ -1,4 +1,4 @@
-#Color-deposit, C++ edition
+# Color-deposit, C++ edition
 
 This is a cute little program that draws pretty pictures that include exactly one pixel of each RGB
 color. This is accomplished by processing each color in some random, semi-random, or deterministic
@@ -34,7 +34,7 @@ color_deposit.cc to `float` to reduce the memory consumption by nearly half. But
 RAM is plentiful and it doesn't speed up the current implementation much at all -- computation is
 dominated by nearest-neighbor searching overhead, not color-distance calculations.
 
-##Building and running
+## Building and running
 
 Before building you will need the submodules with the prerequisites: `git submodule update --init`
 
