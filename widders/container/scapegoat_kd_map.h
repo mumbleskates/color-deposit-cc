@@ -149,7 +149,7 @@ struct ManhattanDistance {
 
   template <typename DimensionDist>
   bool IntersectsPlane(DimensionDist distance_to_plane, size_t dim) {
-    return sumdistance >= distance_to_plane;
+    return sumdistance >= std::abs(distance_to_plane);
   }
 
   NumericDistance sumdistance;
@@ -193,7 +193,7 @@ struct ChebyshevDistance {
 
   template <typename DimensionDist>
   bool IntersectsPlane(DimensionDist distance_to_plane, size_t dim) {
-    return maxdistance >= distance_to_plane;
+    return maxdistance >= std::abs(distance_to_plane);
   }
 
   NumericDistance maxdistance;
