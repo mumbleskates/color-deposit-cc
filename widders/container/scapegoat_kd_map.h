@@ -79,7 +79,8 @@ struct EuclideanDistance {
   EuclideanDistance& operator=(const EuclideanDistance& assn) = default;
 
   template <size_t dims, typename Pt, typename... ExtraArgs>
-  Comparison ImproveDistance(const Pt& a, const Pt& b, ExtraArgs... args) {
+  Comparison ImproveDistance(const Pt& a, const Pt& b,
+                             const ExtraArgs&... args) {
     NumericDistance sum = 0;
     for (size_t i = 0; i < dims; ++i) {
       NumericDistance diff = a[i] - b[i];
@@ -123,7 +124,8 @@ struct ManhattanDistance {
   ManhattanDistance& operator=(const ManhattanDistance& assn) = default;
 
   template <size_t dims, typename Pt, typename... ExtraArgs>
-  Comparison ImproveDistance(const Pt& a, const Pt& b, ExtraArgs... args) {
+  Comparison ImproveDistance(const Pt& a, const Pt& b,
+                             const ExtraArgs&... args) {
     NumericDistance sum = 0;
     for (size_t i = 0; i < dims; ++i) {
       auto diff = a[i] - b[i];
@@ -167,7 +169,8 @@ struct ChebyshevDistance {
   ChebyshevDistance& operator=(const ChebyshevDistance& assn) = default;
 
   template <size_t dims, typename Pt, typename... ExtraArgs>
-  Comparison ImproveDistance(const Pt& a, const Pt& b, ExtraArgs... args) {
+  Comparison ImproveDistance(const Pt& a, const Pt& b,
+                             const ExtraArgs&... args) {
     NumericDistance max = 0;
     for (size_t i = 0; i < dims; ++i) {
       auto diff = a[i] - b[i];
@@ -216,7 +219,8 @@ struct TiebreakingDistance {
   TiebreakingDistance& operator=(const TiebreakingDistance& assn) = default;
 
   template <size_t dims, typename Pt, typename... TiebreakArgs>
-  Comparison ImproveDistance(const Pt& a, const Pt& b, TiebreakArgs... args) {
+  Comparison ImproveDistance(const Pt& a, const Pt& b,
+                             const TiebreakArgs&... args) {
     Comparison inner_result =
         distance.template ImproveDistance<dims>(a, b, &args...);
     if (inner_result == LESSER) {
