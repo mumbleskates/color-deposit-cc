@@ -2,6 +2,10 @@
 	path = third_party/absl
 	url = https://github.com/abseil/abseil-cpp.git
 	branch = master
+[submodule "third_party/bazel/rules_cc"]
+	path = third_party/bazel/rules_cc
+	url = https://github.com/bazelbuild/rules_cc.git
+	branch = master
 [submodule "third_party/gflags"]
 	path = third_party/gflags
 	url = https://github.com/gflags/gflags.git
