@@ -13,6 +13,7 @@
 #include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_map.h"
 #include "widders/algorithm/medians.h"
+#include "widders/container/kd_metrics.h"
 
 namespace widders {
 
@@ -29,7 +30,7 @@ struct MedianOfMediansPolicy {
                  (a->val[dim] == b->val[dim] && a < b);
         });
   }
-  constexpr static bool kBalanceGuaranteed = false;
+  static constexpr bool kBalanceGuaranteed = false;
 };
 
 template <typename NodeType>
@@ -47,231 +48,7 @@ struct ExactMedianPolicy {
                      });
     return middle;
   }
-  constexpr static bool kBalanceGuaranteed = true;
-};
-
-// Standard distance metrics.
-//
-// Distance metrics should have:
-//  * a default constructor to a maximum distance value
-//  * operator== and operator<
-//  * an ImproveDistance<int n>(a, b, ...) function, taking n as the number of
-//    dimensisons for a numeric indexable vector and returning a tri-value
-//    Comparison describing whether the distance between the referenced points
-//    is greater, lesser, or equal to the distance already stored. If the
-//    distance is lesser, it is expected that the callee update its value to
-//    reflect this lesser distance.
-enum Comparison {
-  LESSER = -1,
-  TIED = 0,
-  GREATER = 1,
-};
-
-template <typename NumericDistance>
-struct EuclideanDistance {
-  // Initialize with maximum distance.
-  EuclideanDistance()
-      : sqdistance(std::numeric_limits<NumericDistance>::max()) {}
-  explicit EuclideanDistance(NumericDistance value)
-      : sqdistance(std::move(value)) {}
-  EuclideanDistance(const EuclideanDistance& copy_from) = default;
-  EuclideanDistance(EuclideanDistance&& move_from) noexcept = default;
-  EuclideanDistance& operator=(const EuclideanDistance& assn) = default;
-
-  template <size_t dims, typename Pt, typename... ExtraArgs>
-  Comparison ImproveDistance(const Pt& a, const Pt& b,
-                             const ExtraArgs&... args) {
-    NumericDistance sum = 0;
-    for (size_t i = 0; i < dims; ++i) {
-      NumericDistance diff = a[i] - b[i];
-      sum += diff * diff;
-    }
-    if (sum < sqdistance) {
-      sqdistance = sum;
-      return LESSER;
-    } else if (sum == sqdistance) {
-      return TIED;
-    } else {
-      return GREATER;
-    }
-  }
-
-  bool operator==(const EuclideanDistance& other) {
-    return sqdistance == other.sqdistance;
-  }
-
-  bool operator<(const EuclideanDistance& other) {
-    return sqdistance < other.sqdistance;
-  }
-
-  template <typename DimensionDist>
-  bool IntersectsPlane(DimensionDist distance_to_plane, size_t dim) {
-    return sqdistance >= distance_to_plane * distance_to_plane;
-  }
-
-  NumericDistance sqdistance;
-};
-
-template <typename NumericDistance>
-struct ManhattanDistance {
-  // Initialize with maximum distance.
-  ManhattanDistance()
-      : sumdistance(std::numeric_limits<NumericDistance>::max()) {}
-  explicit ManhattanDistance(NumericDistance value)
-      : sumdistance(std::move(value)) {}
-  ManhattanDistance(const ManhattanDistance& copy_from) = default;
-  ManhattanDistance(ManhattanDistance&& move_from) noexcept = default;
-  ManhattanDistance& operator=(const ManhattanDistance& assn) = default;
-
-  template <size_t dims, typename Pt, typename... ExtraArgs>
-  Comparison ImproveDistance(const Pt& a, const Pt& b,
-                             const ExtraArgs&... args) {
-    NumericDistance sum = 0;
-    for (size_t i = 0; i < dims; ++i) {
-      auto diff = a[i] - b[i];
-      sum += std::abs(diff);
-    }
-    if (sum < sumdistance) {
-      sumdistance = sum;
-      return LESSER;
-    } else if (sum == sumdistance) {
-      return TIED;
-    } else {
-      return GREATER;
-    }
-  }
-
-  bool operator==(const ManhattanDistance& other) {
-    return sumdistance == other.sumdistance;
-  }
-
-  bool operator<(const ManhattanDistance& other) {
-    return sumdistance < other.sumdistance;
-  }
-
-  template <typename DimensionDist>
-  bool IntersectsPlane(DimensionDist distance_to_plane, size_t dim) {
-    return sumdistance >= std::abs(distance_to_plane);
-  }
-
-  NumericDistance sumdistance;
-};
-
-template <typename NumericDistance>
-struct ChebyshevDistance {
-  // Initialize with maximum distance.
-  ChebyshevDistance()
-      : maxdistance(std::numeric_limits<NumericDistance>::max()) {}
-  explicit ChebyshevDistance(NumericDistance value)
-      : maxdistance(std::move(value)) {}
-  ChebyshevDistance(const ChebyshevDistance& copy_from) = default;
-  ChebyshevDistance(ChebyshevDistance&& move_from) noexcept = default;
-  ChebyshevDistance& operator=(const ChebyshevDistance& assn) = default;
-
-  template <size_t dims, typename Pt, typename... ExtraArgs>
-  Comparison ImproveDistance(const Pt& a, const Pt& b,
-                             const ExtraArgs&... args) {
-    NumericDistance max = 0;
-    for (size_t i = 0; i < dims; ++i) {
-      auto diff = a[i] - b[i];
-      max = std::max(max, std::abs(diff));
-    }
-    if (max < maxdistance) {
-      maxdistance = max;
-      return LESSER;
-    } else if (max == maxdistance) {
-      return TIED;
-    } else {
-      return GREATER;
-    }
-  }
-
-  bool operator==(const ChebyshevDistance& other) {
-    return maxdistance == other.maxdistance;
-  }
-
-  bool operator<(const ChebyshevDistance& other) {
-    return maxdistance < other.maxdistance;
-  }
-
-  template <typename DimensionDist>
-  bool IntersectsPlane(DimensionDist distance_to_plane, size_t dim) {
-    return maxdistance >= std::abs(distance_to_plane);
-  }
-
-  NumericDistance maxdistance;
-};
-
-// A wrapper type for other distance types which can integrate an arbitrary
-// tiebreaking function.
-//
-// The Tiebreaker type provided should have operator== and operator< and will be
-// constructed with the arguments passed to ImproveDistance after points a and
-// b. In ScapegoatKdMap, this will be a reference to the key of the entry we are
-// measuring distance to.
-template <typename OtherDistanceType, typename Tiebreak>
-struct TiebreakingDistance {
-  TiebreakingDistance() = default;
-  TiebreakingDistance(OtherDistanceType dist, Tiebreak tb)
-      : distance(std::move(dist)), tiebreak(std::move(tb)) {}
-  TiebreakingDistance(const TiebreakingDistance& copy_from) = default;
-  TiebreakingDistance(TiebreakingDistance&& move_from) noexcept = default;
-  TiebreakingDistance& operator=(const TiebreakingDistance& assn) = default;
-
-  template <size_t dims, typename Pt, typename... TiebreakArgs>
-  Comparison ImproveDistance(const Pt& a, const Pt& b,
-                             const TiebreakArgs&... args) {
-    Comparison inner_result =
-        distance.template ImproveDistance<dims>(a, b, &args...);
-    if (inner_result == LESSER) {
-      tiebreak = Tiebreak(&args...);
-      return LESSER;
-    } else if (inner_result == TIED) {
-      Tiebreak new_tiebreak = Tiebreak(&args...);
-      if (new_tiebreak < tiebreak) {
-        tiebreak = new_tiebreak;
-        return LESSER;
-      } else if (tiebreak == new_tiebreak) {
-        return TIED;
-      } else {
-        return GREATER;
-      }
-    } else {
-      return GREATER;
-    }
-  }
-
-  bool operator==(const TiebreakingDistance& other) {
-    return distance == other.distance && tiebreak == other.tiebreak;
-  }
-
-  bool operator<(const TiebreakingDistance& other) {
-    return distance == other.distance ? tiebreak < other.tiebreak
-                                      : distance < other.distance;
-  }
-
-  template <typename DimensionDist>
-  bool IntersectsPlane(DimensionDist distance_to_plane, size_t dim) {
-    return distance.IntersectsPlane(distance_to_plane, dim);
-  }
-
-  OtherDistanceType distance;
-  Tiebreak tiebreak;
-};
-
-template <typename Rng>
-struct RandomTiebreak {
-  RandomTiebreak() : val() {}
-  template <typename... Args>
-  explicit RandomTiebreak(Args... args) : val(Rng::Value()) {}
-  RandomTiebreak(const RandomTiebreak& copy_from) = default;
-  RandomTiebreak(RandomTiebreak&& move_from) noexcept = default;
-  RandomTiebreak& operator=(const RandomTiebreak& assn) = default;
-
-  bool operator==(const RandomTiebreak& other) { return val == other.val; }
-  bool operator<(const RandomTiebreak& other) { return val < other.val; }
-
-  typename Rng::type val;
+  static constexpr bool kBalanceGuaranteed = true;
 };
 
 // --------------------------------------------------------------------------
@@ -348,26 +125,26 @@ class ScapegoatKdMap {
   const Point& operator[](const Key& key) const { return get(key); }
   // Returns true if the key is in the tree, false otherwise.
   // Takes O(1) time.
-  bool contains(const Key& key) const { return items_.count(key) > 0; }
+  bool contains(const Key& key) const { return items_.contains(key); }
   // Return the height of the tree: the number of nodes that must be
   // traversed to reach the deepest node in the tree.
-  size_t height() const { return head_->maxdepth; }
+  size_t height() const { return head_->height; }
 
   // Set the point value of the given key.
   // If the key already exists in the tree, its value will be changed.
   // Takes O(height) time.
   void set(const Key& key, Point val) {
-    auto item_found = items_.find(key);
-    if (item_found != items_.end()) {
-      // The key already exists. Re-insert its node with the new value.
-      std::unique_ptr<KdNode> reinsert_node = tree_pop_node(item_found->second);
+    KdNode*& item_node = items_[key];
+    if (item_node) {
+      // The key already existed. Re-insert its node with the new value.
+      std::unique_ptr<KdNode> reinsert_node = tree_pop_node(item_node);
       reinsert_node->val = std::move(val);
       // Reinsert the removed node with our new value.
-      item_found->second = reinsert_node.get();
+      item_node = reinsert_node.get();
       tree_insert_node(std::move(reinsert_node));
     } else {
       auto new_node = std::make_unique<KdNode>(key, std::move(val));
-      items_.insert({key, new_node.get()});
+      item_node = new_node.get();
       tree_insert_node(std::move(new_node));
     }
   }
@@ -392,7 +169,7 @@ class ScapegoatKdMap {
   NearestResult<DistanceType> nearest(const Point& val,
                                       DistanceType max_distance = {}) const {
     NearestResult<DistanceType> result(max_distance);
-    tree_search(val, *head_, 0, result);
+    tree_search(val, *head_, 0, &result);
     return result;
   }
 
@@ -400,7 +177,7 @@ class ScapegoatKdMap {
   std::vector<NearestResult<DistanceType>> nearest_n(
       const Point& val, size_t n, DistanceType max_distance = {}) const {
     std::vector<NearestResult<DistanceType>> result(n, {max_distance});
-    tree_search_n(val, *head_, 0, result);
+    tree_search_n(val, *head_, 0, &result);
     absl::c_sort_heap(result);
     // Find out how many items we actually located, eliminating all those which
     // are still empty at the end of our found set.
@@ -410,8 +187,8 @@ class ScapegoatKdMap {
     return result;
   }
 
-  void validate() const {
 #ifndef NDEBUG
+  void validate() const {
     size_t tree_nodes;
     if (empty()) {
       assert(!head_);
@@ -433,52 +210,37 @@ class ScapegoatKdMap {
     }
     assert(tree_nodes == items_.size());
     if (MedianPolicy<KdNode>::kBalanceGuaranteed) {
-      assert(!head_ || tree_is_balanced(head_->maxdepth, size()));
+      assert(!head_ || tree_is_balanced(head_->height, size()));
     }
-#endif
   }
+#endif
 
  private:
-  using VecIter = typename std::vector<std::unique_ptr<KdNode>>::iterator;
-
   struct KdNode {
+    // Our nodes store parent-node pointers because the keys of the structure
+    // are indexed in the hash table and the values are indexed in the tree, and
+    // we want to be able to remove items by key. Therefore, we usually did not
+    // reach the containing node by traversing to it from the root when we want
+    // to remove it, rather looking it up directly from the hash table.
     KdNode* parent = nullptr;
     std::unique_ptr<KdNode> left = nullptr;
     std::unique_ptr<KdNode> right = nullptr;
     Key key = {};
     Point val = {};
     Dimension mid = {};
-    // Absolute depth of the deepest leaf in this subtree, including root.
-    // Zero if the tree is empty. Form a max-statistic tree on this field.
-    uint32_t maxdepth = 0;
+    // Absolute height this subtree, including this node. (Always 1 or greater.)
+    uint32_t height = 0;
 
-    KdNode(Key k, Point v) : key(k), val(v) {}
+    KdNode(Key k, Point v) : key(std::move(k)), val(std::move(v)) {}
     KdNode() = default;
     ~KdNode() = default;
-
-    // Update the stats of this node and its ancestors.
-    // TODO(widders): consider queueing and deferring these updates?
-    void revise_stats() {
-      KdNode* current = this;
-      while (current) {
-        auto new_maxdepth =
-            1 + std::max(current->left ? current->left->maxdepth : 0,
-                         current->right ? current->right->maxdepth : 0);
-        if (current->maxdepth == new_maxdepth) {
-          return;
-        } else {
-          current->maxdepth = new_maxdepth;
-          current = current->parent;
-          continue;
-        }
-      }
-    }
   };
 
+#ifndef NDEBUG
   size_t validate_node(const KdNode& node, const size_t dim, const Point& lower,
                        const Point& upper) const {
     // Check key reference is correct
-    assert(items_.find(node.key)->second == &node);
+    assert(items_[node.key] == &node);
     // Check val is inside the bounds
     for (size_t i = 0; i < dims; ++i) {
       assert(node.val[i] >= lower[i]);
@@ -487,10 +249,9 @@ class ScapegoatKdMap {
     // Check mid is inside the bounds
     assert(node.mid >= lower[dim]);
     assert(node.mid <= upper[dim]);
-    // Check maxdepth is correct
-    assert(node.maxdepth ==
-           1 + std::max((node.left ? node.left->maxdepth : 0),
-                        (node.right ? node.right->maxdepth : 0)));
+    // Check height is correct
+    assert(node.height == 1 + std::max((node.left ? node.left->height : 0),
+                                       (node.right ? node.right->height : 0)));
     // Check child parent pointers
     if (node.left) assert(node.left->parent == &node);
     if (node.right) assert(node.right->parent == &node);
@@ -509,6 +270,24 @@ class ScapegoatKdMap {
     }
     return 1 + children;
   }
+#endif
+
+  // Update the stats of the given node and its ancestors. The passed pointer
+  // must never be null.
+  // TODO(widders): consider queueing and deferring these updates?
+  void revise_stats(KdNode* node) {
+    do {
+      auto new_height = 1 + std::max(node->left ? node->left->height : 0,
+                                     node->right ? node->right->height : 0);
+      if (node->height == new_height) {
+        return;
+      } else {
+        node->height = new_height;
+        node = node->parent;
+        continue;
+      }
+    } while (node);
+  }
 
   // Check each subtree starting from the given node, all the way up
   // the tree looking for the smallest subtree that is unbalanced, then
@@ -516,7 +295,7 @@ class ScapegoatKdMap {
   void rebuild_one_ancestor(KdNode* tree, size_t dim) {
     size_t node_count = count_nodes(tree);
     while (true) {
-      if (tree_is_balanced(tree->maxdepth, node_count)) {
+      if (tree_is_balanced(tree->height, node_count)) {
         // Subtree is sufficiently balanced; continue checking ancestors.
         auto parent = tree->parent;
         if (!parent) return;
@@ -554,10 +333,10 @@ class ScapegoatKdMap {
     KdNode* const parent = tree_root->parent;
     std::vector<std::unique_ptr<KdNode>> nodes;
     nodes.reserve(node_count);
-    collect_nodes(std::move(tree_root), nodes);
+    collect_nodes(std::move(tree_root), &nodes);
     tree_root = std::move(rebuild_recursive(dim, nodes.begin(), nodes.end()));
     tree_root->parent = parent;
-    parent->revise_stats();
+    if (parent) revise_stats(parent);
   }
 
   static size_t count_nodes(KdNode* tree) {
@@ -567,12 +346,14 @@ class ScapegoatKdMap {
   }
 
   static void collect_nodes(std::unique_ptr<KdNode> node,
-                            std::vector<std::unique_ptr<KdNode>>& vec) {
+                            std::vector<std::unique_ptr<KdNode>>* vec) {
     KdNode& node_ref = *node;
     if (node_ref.left) collect_nodes(std::move(node_ref.left), vec);
-    vec.push_back(std::move(node));
+    vec->push_back(std::move(node));
     if (node_ref.right) collect_nodes(std::move(node_ref.right), vec);
   }
+
+  using VecIter = typename std::vector<std::unique_ptr<KdNode>>::iterator;
 
   static std::unique_ptr<KdNode> rebuild_recursive(size_t dim, VecIter start,
                                                    VecIter end) {
@@ -587,7 +368,7 @@ class ScapegoatKdMap {
       std::unique_ptr<KdNode> left_child =
           rebuild_recursive(next_dim, start, pivot);
       left_child->parent = node.get();
-      left_depth = left_child->maxdepth;
+      left_depth = left_child->height;
       node->left = std::move(left_child);
     }
     if (pivot + 1 == end) {
@@ -596,11 +377,11 @@ class ScapegoatKdMap {
       std::unique_ptr<KdNode> right_child =
           rebuild_recursive(next_dim, pivot + 1, end);
       right_child->parent = node.get();
-      right_depth = right_child->maxdepth;
+      right_depth = right_child->height;
       node->right = std::move(right_child);
     }
     // Fix node's metadata
-    node->maxdepth = 1 + std::max(left_depth, right_depth);
+    node->height = 1 + std::max(left_depth, right_depth);
     node->mid = node->val[dim];
     return std::move(node);
   }
@@ -618,8 +399,8 @@ class ScapegoatKdMap {
     KdNode* current = node;
     // Traverse down the deeper branch until we reach a leaf.
     while (current->left || current->right) {
-      const auto left_depth = current->left ? current->left->maxdepth : 0;
-      if (current->right && current->right->maxdepth >= left_depth) {
+      const auto left_depth = current->left ? current->left->height : 0;
+      if (current->right && current->right->height >= left_depth) {
         // Right subtree exists and is at least as deep as the left.
         current = current->right.get();
       } else {
@@ -640,7 +421,7 @@ class ScapegoatKdMap {
       } else {
         popped = std::move(popped_parent->right);
       }
-      popped_parent->revise_stats();
+      revise_stats(popped_parent);
     } else {
       // We are popping the head of the tree.
       popped = std::move(head_);
@@ -654,14 +435,14 @@ class ScapegoatKdMap {
     // end up in the node that is popped off and returned.
     if (popped.get() != node) {
       // Rectify the hash table pointer to the node that is staying.
-      items_.find(popped->key)->second = node;
+      items_[popped->key] = node;
       // Swap the popped node's key and value into that same staying node.
       std::swap(node->key, popped->key);
       std::swap(node->val, popped->val);
     }
 
     // Check for tree balance.
-    if (head_ && !tree_is_balanced(head_->maxdepth, size())) {
+    if (head_ && !tree_is_balanced(head_->height, size())) {
       // Current is still the leaf node that we removed.
       // Traverse upwards counting through dim so we can discover what dimension
       // is the discriminant at popped_parent before rebalancing.
@@ -678,7 +459,7 @@ class ScapegoatKdMap {
   // Insert the given node into the tree.
   void tree_insert_node(std::unique_ptr<KdNode> node) {
     // Leaf nodes always have depth 1, and this node will be a leaf.
-    node->maxdepth = 1;
+    node->height = 1;
     if (!head_) {
       node->mid = node->val[0];
       node->parent = nullptr;
@@ -722,9 +503,9 @@ class ScapegoatKdMap {
       node->mid = node->val[next_dim];
       node->parent = current;
       *destination = std::move(node);
-      current->revise_stats();
+      revise_stats(current);
       // Rebuild parts of the tree if necessary
-      if (!tree_is_balanced(head_->maxdepth, size()))
+      if (!tree_is_balanced(head_->height, size()))
         rebuild_one_ancestor(current, dim);
     }
   }
@@ -732,15 +513,15 @@ class ScapegoatKdMap {
   // Search the tree to find the nearest key/value to the given point.
   template <typename DistanceType>
   void tree_search(const Point& val, const KdNode& node, const size_t dim,
-                   NearestResult<DistanceType>& result) const {
+                   NearestResult<DistanceType>* result) const {
 #ifdef KD_SEARCH_STATS
     result.nodes_searched++;
 #endif
     // Update best result.
-    if (result.distance.template ImproveDistance<dims>(val, node.val,
-                                                       node.key) == LESSER) {
-      result.key = node.key;
-      result.val = &node.val;
+    if (result->distance.template ImproveDistance<dims>(val, node.val,
+                                                        node.key) == BETTER) {
+      result->key = node.key;
+      result->val = &node.val;
     }
     // Traverse downwards.
     const size_t next_dim = dim == dims - 1 ? 0 : dim + 1;
@@ -751,7 +532,7 @@ class ScapegoatKdMap {
       }
       // Traverse to the other side if still needed.
       if (node.right &&
-          result.distance.IntersectsPlane(distance_to_plane, dim)) {
+          result->distance.IntersectsPlane(distance_to_plane, dim)) {
         tree_search(val, *node.right, next_dim, result);
       }
     } else {  // val is right of the splitting plane.
@@ -760,7 +541,7 @@ class ScapegoatKdMap {
       }
       // Traverse to the other side if still needed.
       if (node.left &&
-          result.distance.IntersectsPlane(distance_to_plane, dim)) {
+          result->distance.IntersectsPlane(distance_to_plane, dim)) {
         tree_search(val, *node.left, next_dim, result);
       }
     }
@@ -769,17 +550,17 @@ class ScapegoatKdMap {
   // Search the tree to find the nearest key/value to the given point.
   template <typename DistanceType>
   void tree_search_n(const Point& val, const KdNode& node, const size_t dim,
-                     std::vector<NearestResult<DistanceType>>& result) const {
-    NearestResult<DistanceType>& nth_best = *result.begin();
+                     std::vector<NearestResult<DistanceType>>* result) const {
+    NearestResult<DistanceType>& nth_best = *result->begin();
     // Update best result.
     if (nth_best.distance.template ImproveDistance<dims>(val, node.val,
-                                                         node.key) == LESSER) {
+                                                         node.key) == BETTER) {
       nth_best.key = node.key;
       nth_best.val = &node.val;
       // By replacing values in the root of the heap, then popping & pushing,
       // that item is swapped to the back and then reinserted.
-      absl::c_pop_heap(result);
-      absl::c_push_heap(result);
+      absl::c_pop_heap(*result);
+      absl::c_push_heap(*result);
     }
 
     // Traverse downwards.

@@ -453,6 +453,9 @@ int main(int argc, char* argv[]) {
     if (FLAGS_log_progress) progress.update(i);
     auto result = frontier.nearest<Distance>(color_values[i].second);
 #ifdef KD_TREE_DEBUG
+#ifdef NDEBUG
+#error NDEBUG disables compilation of k-d tree validation.
+#endif
     frontier.validate();
 #endif
     const Position& pos = result.key;
