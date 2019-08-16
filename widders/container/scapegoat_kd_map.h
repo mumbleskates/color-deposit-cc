@@ -275,7 +275,7 @@ class ScapegoatKdMap {
   // Update the stats of the given node and its ancestors. The passed pointer
   // must never be null.
   // TODO(widders): consider queueing and deferring these updates?
-  void revise_stats(KdNode* node) {
+  static void revise_stats(KdNode* node) {
     do {
       auto new_height = 1 + std::max(node->left ? node->left->height : 0,
                                      node->right ? node->right->height : 0);
@@ -328,8 +328,8 @@ class ScapegoatKdMap {
     }
   }
 
-  void rebuild(std::unique_ptr<KdNode>& tree_root, size_t node_count,
-               size_t dim) {
+  static void rebuild(std::unique_ptr<KdNode>& tree_root, size_t node_count,
+                      size_t dim) {
     KdNode* const parent = tree_root->parent;
     std::vector<std::unique_ptr<KdNode>> nodes;
     nodes.reserve(node_count);
