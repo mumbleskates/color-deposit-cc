@@ -4,30 +4,33 @@
 #include <cstdint>
 #include <functional>
 #include <iostream>
-#include <random>
 #include <string>
 #include <vector>
 
 #include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/flags/flag.h"
+#include "absl/flags/parse.h"
+#include "absl/flags/usage.h"
+#include "absl/random/random.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_split.h"
 #include "absl/types/variant.h"
+
 #include "colors/color_conversion.h"
-#include "gflags/gflags.h"
 #include "third_party/lodepng/lodepng.h"
 #include "widders/container/scapegoat_kd_map.h"
 #include "widders/util/progress.h"
 
 // Commandline flags
-DEFINE_bool(log_progress, false, "Log progress to stdout.");
-DEFINE_string(color_metric, "lab",
-              "The type of color metric to determine similar colors (one of "
-              "lab, luv, rgb, xyz, raw).");
+ABSL_FLAG(bool, log_progress, false, "Log progress to stdout.");
+ABSL_FLAG(std::string, color_metric, "lab",
+          "The type of color metric to determine similar colors (one of "
+          "lab, luv, rgb, xyz, raw).");
 // TODO(widders): Hilbert... and zigzag?
-DEFINE_string(
-    ordering, "shuffle",
+ABSL_FLAG(
+    std::string, ordering, "shuffle",
     "The order in which colors are added to the image. Possible values are "
     "'shuffle' for random, or some variation of 'ordered:+r+g+b', "
     "'ordered:-g+b-r', etc. for a specific ordering from highest to lowest "
@@ -48,12 +51,12 @@ using std::string;
 using std::vector;
 
 constexpr size_t kColorDims = 3;
-constexpr size_t kImageWidth = 1u << 12u;
-constexpr size_t kImageHeight = 1u << 12u;
+constexpr size_t kImageWidth = 1U << 12U;
+constexpr size_t kImageHeight = 1U << 12U;
 constexpr size_t kImageSize = kImageWidth * kImageHeight;
 constexpr int32_t kOriginX = kImageWidth / 2;
 constexpr int32_t kOriginY = kImageWidth / 2;
-constexpr uint32_t kEmpty = ~0u;
+constexpr uint32_t kEmpty = ~0U;
 
 struct Position {
   int x;
@@ -118,7 +121,7 @@ struct ColorOrder {
 
 // Returns a mapping from [0,1) SRGB values to the corresponding color space
 // named by the color_metric flag.
-const ColorMetric GetColorMetric(const string& metric_name) {
+ColorMetric GetColorMetric(const string& metric_name) {
   return absl::flat_hash_map<string, ColorMetric>{
       {"raw",
        [](uint32_t int_srgb) {
@@ -316,8 +319,8 @@ absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
               uint32_t result = 0;
               for (int i = 0; i < 3; ++i) {
                 const auto& part = ordering_parts[i];
-                uint32_t input_ch = (input & (0xff << (8 * i))) >> (8 * i);
-                result |= (part.descending ? 255 - input_ch : input_ch)
+                uint32_t input_ch = (input & (0xff << (8U * i))) >> (8 * i);
+                result |= (part.descending ? 255U - input_ch : input_ch)
                           << (8 * part.channel);
               }
               return result;
@@ -368,15 +371,15 @@ absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
 }
 
 int main(int argc, char* argv[]) {
-  gflags::SetUsageMessage("Color deposit: growing images like crystals.");
-  gflags::ParseCommandLineFlags(&argc, &argv, true);
+  absl::SetProgramUsageMessage("Color deposit: growing images like crystals.");
+  const std::vector<char*> cmd_args = absl::ParseCommandLine(argc, argv);
 
-  const ColorMetric metric = GetColorMetric(FLAGS_color_metric);
+  const ColorMetric metric = GetColorMetric(absl::GetFlag(FLAGS_color_metric));
   if (!metric) {
     cout << "Invalid color metric name" << endl;
     return 1;
   }
-  const auto maybe_ordering = ParseOrdering(FLAGS_ordering);
+  const auto maybe_ordering = ParseOrdering(absl::GetFlag(FLAGS_ordering));
   if (absl::holds_alternative<string>(maybe_ordering)) {
     cout << absl::get<string>(maybe_ordering) << endl;
     return 1;
@@ -387,20 +390,14 @@ int main(int argc, char* argv[]) {
   color_values.reserve(kImageSize);
 
   cout << "Generating colors..." << flush;
-  for (uint32_t int_srgb = 0; int_srgb < 0x1000000u; ++int_srgb) {
+  for (uint32_t int_srgb = 0; int_srgb < 0x1000000U; ++int_srgb) {
     uint32_t mapped = ordering.map_channels(int_srgb);
     color_values.emplace_back<ColorPair>({mapped, {}});
   }
   cout << "done" << endl;
 
-  // Init RNG.
-  static std::random_device rng_dev;
-  static std::seed_seq seed = {rng_dev(),
-                               static_cast<std::random_device::result_type>(
-                                   std::chrono::high_resolution_clock::now()
-                                       .time_since_epoch()
-                                       .count())};
-  static auto rng = RandomGenerator(seed);
+  // RNG instance.
+  static absl::BitGen rng;
 
   if (ordering.should_shuffle) {
     cout << "Shuffling..." << flush;
@@ -449,8 +446,9 @@ int main(int argc, char* argv[]) {
   frontier.set({kOriginX, kOriginY}, Color());
   // Repeatedly place a pixel in the image, updating the frontier set and all
   // affected color values of neighboring frontier pixels.
+  const bool logging_enabled = absl::GetFlag(FLAGS_log_progress);
   for (size_t i = 0; i < kImageSize; ++i) {
-    if (FLAGS_log_progress) progress.update(i);
+    if (logging_enabled) progress.update(i);
     auto result = frontier.nearest<Distance>(color_values[i].second);
 #ifdef KD_TREE_DEBUG
 #ifdef NDEBUG
@@ -508,7 +506,8 @@ int main(int argc, char* argv[]) {
   color_values.clear();
 
   cout << "Encoding to file..." << flush;
-  const string output_filename = argc < 2 ? "output.png" : argv[1];
+  const string output_filename =
+      cmd_args.size() <= 1 ? "output.png" : cmd_args[1];
   auto error = lodepng::encode(output_filename,
                                reinterpret_cast<unsigned char*>(image.data()),
                                kImageWidth, kImageHeight);
