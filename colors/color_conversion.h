@@ -32,9 +32,9 @@ using Color = std::array<Ch, 3>;
 
 template <typename Ch>
 inline constexpr Color<Ch> ExtractSRGB(uint32_t srgb) {
-  return {{((srgb & 0x00ff0000u) >> 16u) / Ch(256.0),
-           ((srgb & 0x0000ff00u) >> 8u) / Ch(256.0),
-           (srgb & 0x000000ffu) / Ch(256.0)}};
+  return {{((srgb & 0x00ff0000U) >> 16U) / Ch(256.0),
+           ((srgb & 0x0000ff00U) >> 8U) / Ch(256.0),
+           (srgb & 0x000000ffU) / Ch(256.0)}};
 }
 
 template <typename Ch>
@@ -43,9 +43,9 @@ inline constexpr uint32_t RenderARGB(const Color<Ch>& from,
   const Ch& r = from[0];
   const Ch& g = from[1];
   const Ch& b = from[2];
-  return static_cast<uint32_t>(opacity << 24) |
-         static_cast<uint32_t>(static_cast<u_char>(r * 256) << 16) |
-         static_cast<uint32_t>(static_cast<u_char>(g * 256) << 8) |
+  return static_cast<uint32_t>(opacity << 24U) |
+         static_cast<uint32_t>(static_cast<u_char>(r * 256) << 16U) |
+         static_cast<uint32_t>(static_cast<u_char>(g * 256) << 8U) |
          static_cast<uint32_t>(static_cast<u_char>(b * 256));
 }
 
@@ -53,10 +53,11 @@ static_assert(RenderARGB(ExtractSRGB<double>(0x123456), 0) == 0x123456,
               "RenderARGB and ExtractSRGB should be inverse");
 
 inline constexpr uint32_t RenderABGR(uint32_t int_srgb, u_char opacity = 0xff) {
-  const uint32_t r = int_srgb & 0x000000ff;
-  const uint32_t g = (int_srgb & 0x0000ff00) >> 8;
-  const uint32_t b = (int_srgb & 0x00ff0000) >> 16;
-  return b | (g << 8) | (r << 16) | (opacity << 24);
+  const uint32_t b = (int_srgb & 0x00ff0000U) >> 16U;
+  const uint32_t g = (int_srgb & 0x0000ff00U);
+  const uint32_t r = (int_srgb & 0x000000ffU) << 16U;
+  const uint32_t a = static_cast<uint32_t>(opacity) << 24U;
+  return a | r | g | b;
 }
 
 template <typename Ch>
@@ -78,7 +79,7 @@ inline constexpr Color<Ch> LinearRGBToXYZ(const Color<Ch>& from) {
   Ch y = r * Ch(0.357579) + g * Ch(0.715158) + b * Ch(0.119193);
   Ch z = r * Ch(0.180464) + g * Ch(0.0721856) + b * Ch(0.950444);
   return {{x, y, z}};
-};
+}
 
 template <typename Ch>
 inline constexpr Color<Ch> XYZToLAB(const Color<Ch>& from) {
