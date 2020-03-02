@@ -434,13 +434,9 @@ int main(int argc, char* argv[]) {
          << "frontier size " << frontier.size() << endl;  // frontier stats
   });
 
-  struct RngType {
-    using type = uint64_t;
-    static uint64_t Value() { return rng(); }
-  };
   using Distance =
       widders::TiebreakingDistance<widders::EuclideanDistance<long double>,
-                                   widders::RandomTiebreak<RngType>>;
+                                   widders::RandomTiebreak<absl::BitGen>>;
 
   // Create initial frontier.
   frontier.set({kOriginX, kOriginY}, Color());

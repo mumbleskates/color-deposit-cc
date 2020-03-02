@@ -2,10 +2,13 @@
 #define WIDDERS_CONTAINER_KD_METRICS_H_
 
 #include <algorithm>
+#include <cstddef>
 #include <limits>
 #include <utility>
 
 namespace widders {
+
+using ::std::size_t;
 
 // Standard distance metrics.
 //
@@ -220,7 +223,7 @@ template <typename Rng>
 struct RandomTiebreak {
   RandomTiebreak() : val() {}
   template <typename... Args>
-  explicit RandomTiebreak(Args... args) : val(Rng::Value()) {}
+  explicit RandomTiebreak(Args... args) : val(rng_instance()) {}
   RandomTiebreak(const RandomTiebreak& copy_from) = default;
   RandomTiebreak(RandomTiebreak&& move_from) noexcept = default;
   RandomTiebreak& operator=(const RandomTiebreak& assn) = default;
@@ -228,8 +231,12 @@ struct RandomTiebreak {
   bool operator==(const RandomTiebreak& other) { return val == other.val; }
   bool operator<(const RandomTiebreak& other) { return val < other.val; }
 
-  typename Rng::type val;
+  static Rng rng_instance;
+  typename Rng::result_type val;
 };
+
+template <typename Rng>
+Rng RandomTiebreak<Rng>::rng_instance = {};
 
 }  // namespace widders
 
