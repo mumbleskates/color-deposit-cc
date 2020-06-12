@@ -155,10 +155,10 @@ class ScapegoatKdMap {
   size_t erase(const Key& key) {
     const auto found_item = items_.find(key);
     if (found_item != items_.end()) {
-      // Remove the item from the hash table.
-      items_.erase(found_item);
       // Pop the node out of the tree and delete it.
       std::unique_ptr<KdNode> removed_node = tree_pop_node(found_item->second);
+      // Remove the item from the hash table.
+      items_.erase(found_item);
       return 1;
     } else {
       return 0;
