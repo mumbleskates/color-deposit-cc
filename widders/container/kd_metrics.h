@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <limits>
+#include <type_traits>
 #include <utility>
 
 namespace widders {
@@ -219,11 +220,11 @@ struct TiebreakingDistance {
   Tiebreak tiebreak;
 };
 
-template <typename Rng>
+template <typename RngType, RngType& rng_callable>
 struct RandomTiebreak {
   RandomTiebreak() : val() {}
   template <typename... Args>
-  explicit RandomTiebreak(Args... args) : val(rng_instance()) {}
+  explicit RandomTiebreak(Args... args) : val(rng_callable()) {}
   RandomTiebreak(const RandomTiebreak& copy_from) = default;
   RandomTiebreak(RandomTiebreak&& move_from) noexcept = default;
   RandomTiebreak& operator=(const RandomTiebreak& assn) = default;
@@ -231,12 +232,8 @@ struct RandomTiebreak {
   bool operator==(const RandomTiebreak& other) { return val == other.val; }
   bool operator<(const RandomTiebreak& other) { return val < other.val; }
 
-  static Rng rng_instance;
-  typename Rng::result_type val;
+  decltype(rng_callable()) val;
 };
-
-template <typename Rng>
-Rng RandomTiebreak<Rng>::rng_instance = {};
 
 }  // namespace widders
 

@@ -1,6 +1,6 @@
 #include <algorithm>
-#include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <iostream>
@@ -13,21 +13,23 @@
 #include "absl/flags/flag.h"
 #include "absl/flags/parse.h"
 #include "absl/flags/usage.h"
+#include "absl/random/distributions.h"
 #include "absl/random/random.h"
+#include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_split.h"
 #include "absl/types/variant.h"
-
 #include "colors/color_conversion.h"
 #include "third_party/lodepng/lodepng.h"
+#include "widders/container/kd_metrics.h"
 #include "widders/container/scapegoat_kd_map.h"
 #include "widders/util/progress.h"
 
 // Commandline flags
 ABSL_FLAG(bool, log_progress, false, "Log progress to stdout.");
 ABSL_FLAG(std::string, color_metric, "lab",
-          "The type of color metric to determine similar colors (one of "
-          "lab, luv, rgb, xyz, raw).");
+          "The type of color metric to determine similar colors (one of lab, "
+          "luv, xyz, rgb, srgb).");
 // TODO(widders): Hilbert... and zigzag?
 ABSL_FLAG(
     std::string, ordering, "shuffle",
@@ -41,8 +43,13 @@ ABSL_FLAG(
     "such components; for example, 'ordered:-r+b' would be the equivalent of "
     "all colors shuffled, then ordered by ascending blue value, then finally "
     "ordered by descending red value (with green left randomized).");
+ABSL_FLAG(
+    std::string, origin, "center",
+    "The origin in the image at which to start depositing. Possible values are "
+    "'center' for the center of the image, 'random' for a random location, "
+    "'x,y' with exact integer pixel coordinates, or 'x.xx%,y.yy%' for floating "
+    "point percentage coordinates relative to the size of the image.");
 // TODO(widders): dimensions: square, tall, wide
-// TODO(widders): origin location
 
 using std::cout;
 using std::endl;
@@ -51,12 +58,10 @@ using std::string;
 using std::vector;
 
 constexpr size_t kColorDims = 3;
-constexpr size_t kImageWidth = 1U << 12U;
-constexpr size_t kImageHeight = 1U << 12U;
-constexpr size_t kImageSize = kImageWidth * kImageHeight;
-constexpr int32_t kOriginX = kImageWidth / 2;
-constexpr int32_t kOriginY = kImageWidth / 2;
 constexpr uint32_t kEmpty = ~0U;
+
+constexpr int kAllColorImageWidth = 1U << 12U;
+constexpr int kAllColorImageHeight = 1U << 12U;
 
 struct Position {
   int x;
@@ -77,14 +82,43 @@ struct Position {
   }
 };
 
+using Canvas = vector<uint32_t>;
+
+struct ImageBuffer {
+  int width;
+  int height;
+  Canvas buffer;
+
+  static ImageBuffer OfSize(int width, int height) {
+    ImageBuffer result{
+        .width = width,
+        .height = height,
+    };
+    result.erase();
+    return result;
+  }
+
+  bool InBounds(Position pos) const {
+    return pos.x >= 0 && pos.y >= 0 && pos.x < static_cast<int>(width) &&
+           pos.y < static_cast<int>(height);
+  }
+
+  uint32_t& operator[](Position pos) { return buffer[pos.y * height + pos.x]; }
+
+  const uint32_t& operator[](Position pos) const {
+    return buffer[pos.y * height + pos.x];
+  }
+
+  size_t size() const { return buffer.size(); }
+  void erase() { buffer = Canvas(width * height, kEmpty); }
+};
+
 // Type for each color channel field.
 using Field = double;
-using RandomGenerator = std::mt19937_64;
 // Type for the frontier set.
 using ColorMap = widders::ScapegoatKdMap<kColorDims, Field, Position>;
 using Color = color::Color<Field>;
 using ColorPair = std::pair<uint32_t, Color>;
-using Canvas = vector<uint32_t>;
 using ColorMetric = std::function<Color(uint32_t int_srgb)>;
 
 // Offsets from any occupied pixel to any unoccupied pixel that is valid for
@@ -99,17 +133,6 @@ const std::pair<Position, Field> kSamples[] =       // NOLINT(cert-err58-cpp)
      {{+1, +0}, 1}, {{+1, +1}, 1 / std::sqrt(2)},   //
      {{+0, +1}, 1}, {{-1, +1}, 1 / std::sqrt(2)}};  //
 
-// Maps a Position to the index in our image vector where that pixel appears.
-inline size_t PositionToImageIndex(Position pos) {
-  return pos.y * kImageWidth + pos.x;
-}
-
-// Predicate for whether a Position is within the bounds of the image.
-inline bool PositionInBounds(Position pos) {
-  return pos.x >= 0 && pos.y >= 0 && pos.x < static_cast<int>(kImageWidth) &&
-         pos.y < static_cast<int>(kImageHeight);
-}
-
 // A pair of functions for generating and then (if necessary) reordering colors
 // before placement on the canvas.
 struct ColorOrder {
@@ -123,7 +146,7 @@ struct ColorOrder {
 // named by the color_metric flag.
 ColorMetric GetColorMetric(const string& metric_name) {
   return absl::flat_hash_map<string, ColorMetric>{
-      {"raw",
+      {"srgb",
        [](uint32_t int_srgb) {
          Color srgb = color::ExtractSRGB<Field>(int_srgb);
          return srgb;
@@ -169,7 +192,8 @@ absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
     XYZ,
   };
   constexpr char kOrderClassError[] =
-      "Ordering channels must all come from the same class (rgb, luv, xyz).";
+      "Ordering channels must all come from the same colorspace (rgb, luv, "
+      "xyz).";
 
   struct OrderPart {
     int channel = 0;
@@ -319,7 +343,7 @@ absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
               uint32_t result = 0;
               for (int i = 0; i < 3; ++i) {
                 const auto& part = ordering_parts[i];
-                uint32_t input_ch = (input & (0xff << (8U * i))) >> (8 * i);
+                uint32_t input_ch = (input & (0xffU << (8U * i))) >> (8U * i);
                 result |= (part.descending ? 255U - input_ch : input_ch)
                           << (8 * part.channel);
               }
@@ -370,6 +394,76 @@ absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
   }
 }
 
+// Parses the origin location for the deposit process.
+absl::variant<string, Position> ParseOrigin(const string& origin_string,
+                                            const ImageBuffer& image,
+                                            absl::BitGen& rng) {
+  if (origin_string == "center") {
+    return Position{image.width / 2, image.height / 2};
+  }
+  if (origin_string == "random") {
+    return Position{
+        absl::Uniform(absl::IntervalClosedOpen, rng, 0, image.width),
+        absl::Uniform(absl::IntervalClosedOpen, rng, 0, image.height),
+    };
+  }
+  std::pair<string, string> coords =
+      absl::StrSplit(origin_string, absl::MaxSplits(absl::ByChar(','), 1));
+  std::string &x = coords.first, y = coords.second;
+  absl::StripAsciiWhitespace(&x);
+  absl::StripAsciiWhitespace(&y);
+  if (y.empty() || (absl::EndsWith(x, "%") != absl::EndsWith(y, "%"))) {
+    return "Expected 'center', 'x,y', or 'x.xx%,y.yy%' format for origin "
+           "coordinates.";
+  }
+  if (absl::EndsWith(x, "%")) {
+    // Remove trailing %
+    x.resize(x.size() - 1);
+    y.resize(y.size() - 1);
+    double x_percent;
+    double y_percent;
+    if (absl::SimpleAtod(x, &x_percent) && absl::SimpleAtod(y, &y_percent)) {
+      if (x_percent < 0 || x_percent > 100) {
+        return "Origin x percentage must be between 0% and 100%.";
+      }
+      if (y_percent < 0 || y_percent > 100) {
+        return "Origin y percentage must be between 0% and 100%.";
+      }
+      int x_exact = static_cast<int>(image.width * (x_percent / 100.0));
+      int y_exact = static_cast<int>(image.height * (y_percent / 100.0));
+      return Position{
+          std::min(image.width - 1, x_exact),
+          std::min(image.height - 1, y_exact),
+      };
+    } else {
+      return "Could not parse origin percentages.";
+    }
+  } else {
+    // Exact origin coordinates.
+    int x_exact;
+    int y_exact;
+    if (absl::SimpleAtoi(x, &x_exact) && absl::SimpleAtoi(y, &y_exact)) {
+      if (x_exact < 0 || x_exact >= image.width) {
+        return absl::StrCat("Origin x coordinate must be between 0 and ",
+                            image.width - 1);
+      }
+      if (y_exact < 0 || y_exact >= image.height) {
+        return absl::StrCat("Origin x coordinate must be between 0 and ",
+                            image.height - 1);
+      }
+      return Position{
+          .x = x_exact,
+          .y = y_exact,
+      };
+    } else {
+      return "Could not parse origin coordinates.";
+    }
+  }
+}
+
+// RNG instance
+static absl::BitGen rng;
+
 int main(int argc, char* argv[]) {
   absl::SetProgramUsageMessage("Color deposit: growing images like crystals.");
   const std::vector<char*> cmd_args = absl::ParseCommandLine(argc, argv);
@@ -387,7 +481,7 @@ int main(int argc, char* argv[]) {
   const auto& ordering = absl::get<ColorOrder>(maybe_ordering);
 
   vector<ColorPair> color_values;
-  color_values.reserve(kImageSize);
+  color_values.reserve(kAllColorImageWidth * kAllColorImageHeight);
 
   cout << "Generating colors..." << flush;
   for (uint32_t int_srgb = 0; int_srgb < 0x1000000U; ++int_srgb) {
@@ -395,9 +489,6 @@ int main(int argc, char* argv[]) {
     color_values.emplace_back<ColorPair>({mapped, {}});
   }
   cout << "done" << endl;
-
-  // RNG instance.
-  static absl::BitGen rng;
 
   if (ordering.should_shuffle) {
     cout << "Shuffling..." << flush;
@@ -423,27 +514,37 @@ int main(int argc, char* argv[]) {
   }
   cout << "done" << endl;
 
+  auto image = ImageBuffer::OfSize(kAllColorImageWidth, kAllColorImageHeight);
+  auto maybe_origin = ParseOrigin(absl::GetFlag(FLAGS_origin), image, rng);
+  if (absl::holds_alternative<string>(maybe_origin)) {
+    cout << "Error: " << absl::get<string>(maybe_origin) << endl;
+    return 1;
+  }
+  auto origin = absl::get<Position>(maybe_origin);
+
   cout << "Filling..." << flush;
-  Canvas image(kImageSize, kEmpty);
   auto frontier = ColorMap(1.4);
-  Progress progress([&frontier](ProgressStats stats) {
-    cout << stats.progress << " pixels done; "     // absolute progress
-         << stats.recent_update_rate << " px/s; "  // rate
-         << "ETA " << absl::Trunc(stats.eta(kImageSize), absl::Seconds(0.1))
-         << "; "                                          // ETA
-         << "frontier size " << frontier.size() << endl;  // frontier stats
-  });
+  ProgressOptions progress_options;
+  progress_options.output_function =
+      [&frontier, image_size = image.size()](ProgressStats stats) {
+        cout << stats.progress << " pixels done; "     // absolute progress
+             << stats.recent_update_rate << " px/s; "  // rate
+             << "ETA " << absl::Trunc(stats.eta(image_size), absl::Seconds(0.1))
+             << "; "                                          // ETA
+             << "frontier size " << frontier.size() << endl;  // frontier stats
+      };
+  Progress progress(progress_options);
 
   using Distance =
       widders::TiebreakingDistance<widders::EuclideanDistance<long double>,
-                                   widders::RandomTiebreak<absl::BitGen>>;
+                                   widders::RandomTiebreak<decltype(rng), rng>>;
 
   // Create initial frontier.
-  frontier.set({kOriginX, kOriginY}, Color());
+  frontier.set({origin.x, origin.y}, Color());
   // Repeatedly place a pixel in the image, updating the frontier set and all
   // affected color values of neighboring frontier pixels.
   const bool logging_enabled = absl::GetFlag(FLAGS_log_progress);
-  for (size_t i = 0; i < kImageSize; ++i) {
+  for (size_t i = 0; i < image.size(); ++i) {
     if (logging_enabled) progress.update(i);
     auto result = frontier.nearest<Distance>(color_values[i].second);
 #ifdef KD_TREE_DEBUG
@@ -454,12 +555,11 @@ int main(int argc, char* argv[]) {
 #endif
     const Position& pos = result.key;
     frontier.erase(pos);
-    image[PositionToImageIndex(pos)] = static_cast<uint32_t>(i);
+    image[pos] = static_cast<uint32_t>(i);
     for (const Position& f_delta : kFrontierOffsets) {
       Position frontier_pos = pos + f_delta;
       // Do nothing if this is not an empty frontier point.
-      if (!PositionInBounds(frontier_pos) ||
-          image[PositionToImageIndex(frontier_pos)] != kEmpty) {
+      if (!image.InBounds(frontier_pos) || image[frontier_pos] != kEmpty) {
         continue;
       }
       // Sum surrounding points for the new value of this frontier.
@@ -469,8 +569,8 @@ int main(int argc, char* argv[]) {
         const Position& s_delta = sample.first;
         const Field& sample_weight = sample.second;
         Position sample_pos = frontier_pos + s_delta;
-        if (!PositionInBounds(sample_pos)) continue;
-        const uint32_t sample_idx = image[PositionToImageIndex(sample_pos)];
+        if (!image.InBounds(sample_pos)) continue;
+        const uint32_t sample_idx = image[sample_pos];
         // Sum values of non-empty neighbors into new_mean.
         if (sample_idx == kEmpty) continue;
         total_weight += sample_weight;
@@ -489,11 +589,11 @@ int main(int argc, char* argv[]) {
   }
   absl::Duration elapsed = progress.elapsed();
   cout << "done; Total " << absl::Trunc(elapsed, absl::Seconds(0.1))
-       << "; Average " << kImageSize / absl::ToDoubleSeconds(elapsed) << " px/s"
-       << endl;
+       << "; Average " << image.size() / absl::ToDoubleSeconds(elapsed)
+       << " px/s" << endl;
 
   cout << "Unwrapping colors..." << flush;
-  for (auto& pixel : image) {
+  for (auto& pixel : image.buffer) {
     pixel = color::RenderABGR(color_values[pixel].first);
   }
   cout << "done" << endl;
@@ -504,9 +604,9 @@ int main(int argc, char* argv[]) {
   cout << "Encoding to file..." << flush;
   const string output_filename =
       cmd_args.size() <= 1 ? "output.png" : cmd_args[1];
-  auto error = lodepng::encode(output_filename,
-                               reinterpret_cast<unsigned char*>(image.data()),
-                               kImageWidth, kImageHeight);
+  auto error = lodepng::encode(
+      output_filename, reinterpret_cast<unsigned char*>(image.buffer.data()),
+      image.width, image.height);
   if (error) {
     cout << "encoder error " << error << ": " << lodepng_error_text(error)
          << endl;

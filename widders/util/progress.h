@@ -19,18 +19,22 @@ struct ProgressStats {
   double harmonic_update_rate;  // Harmonic mean of recent and average rate.
 };
 
+struct ProgressOptions {
+  std::function<void(ProgressStats)> output_function = nullptr;
+  absl::Duration target_output_interval = absl::Seconds(0.5);
+  int64_t initial_progress = 0;
+  int64_t first_output_progress = 1024;
+};
+
 class Progress {
  public:
-  explicit Progress(std::function<void(ProgressStats)> output,
-                    absl::Duration target_output_interval = absl::Seconds(0.5),
-                    int64_t initial_progress = 0,
-                    int64_t first_output_progress = 1024)
-      : output_(std::move(output)),
-        target_output_interval_(target_output_interval),
-        initial_progress_(initial_progress),
+  explicit Progress(ProgressOptions options = {})
+      : output_(std::move(options.output_function)),
+        target_output_interval_(options.target_output_interval),
+        initial_progress_(options.initial_progress),
         start_time_(absl::Now()),
-        last_output_progress_(initial_progress),
-        next_check_progress_(first_output_progress),
+        last_output_progress_(options.initial_progress),
+        next_check_progress_(options.first_output_progress),
         last_output_time_(start_time_) {}
 
   // Update progress to output function if we should.

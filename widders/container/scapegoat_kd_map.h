@@ -4,7 +4,7 @@
 #include <array>
 #include <cassert>
 #include <cmath>
-#include <functional>
+#include <cstddef>
 #include <limits>
 #include <memory>
 #include <utility>
@@ -16,6 +16,8 @@
 #include "widders/container/kd_metrics.h"
 
 namespace widders {
+
+using ::std::size_t;
 
 template <typename NodeType>
 struct MedianOfMediansPolicy {
@@ -62,7 +64,7 @@ class ScapegoatKdMap {
   struct KdNode;
 
   // TODO(widders): maybe memoize
-  inline bool tree_is_balanced(size_t height, size_t node_count) const {
+  inline bool tree_is_balanced(uint32_t height, size_t node_count) const {
     // 1 + (implicit) floor of (log2 of ^ tree node count multiplied by the
     //                               height balance we maintain)
     return height <= 1 + static_cast<uint32_t>(std::log2f(node_count) *
@@ -240,7 +242,7 @@ class ScapegoatKdMap {
   size_t validate_node(const KdNode& node, const size_t dim, const Point& lower,
                        const Point& upper) const {
     // Check key reference is correct
-    assert(items_[node.key] == &node);
+    assert(items_.find(node.key)->second == &node);
     // Check val is inside the bounds
     for (size_t i = 0; i < dims; ++i) {
       assert(node.val[i] >= lower[i]);
@@ -276,6 +278,7 @@ class ScapegoatKdMap {
   // must never be null.
   // TODO(widders): consider queueing and deferring these updates?
   static void revise_stats(KdNode* node) {
+    assert(node);
     do {
       auto new_height = 1 + std::max(node->left ? node->left->height : 0,
                                      node->right ? node->right->height : 0);
@@ -293,56 +296,35 @@ class ScapegoatKdMap {
   // the tree looking for the smallest subtree that is unbalanced, then
   // rebuild it.
   void rebuild_one_ancestor(KdNode* tree, size_t dim) {
-    size_t node_count = count_nodes(tree);
+    assert(tree);
+    std::vector<std::unique_ptr<KdNode>> collection;
+    KdNode* current = tree;
     while (true) {
-      if (tree_is_balanced(tree->height, node_count)) {
+      KdNode* parent = current->parent;
+      std::unique_ptr<KdNode>* current_tree;
+      if (parent == nullptr) {
+        current_tree = &head_;
+      } else if (parent->left.get() == current) {
+        current_tree = &parent->left;
+      } else {
+        current_tree = &parent->right;
+      }
+      collect_nodes(std::move(*current_tree), &collection);
+      if (tree_is_balanced(current->height, collection.size()) &&
+          parent != nullptr) {
         // Subtree is sufficiently balanced; continue checking ancestors.
-        auto parent = tree->parent;
-        if (!parent) return;
-        // Add the nodes from the parent and sibling to node_count.
-        if (parent->left.get() == tree) {
-          node_count += 1 + count_nodes(parent->right.get());
-        } else {
-          node_count += 1 + count_nodes(parent->left.get());
-        }
-        tree = parent;
+        current = parent;
         // Keep dim in sync with tree's current level.
         dim = dim == 0 ? dims - 1 : dim - 1;
         continue;
       } else {
-        // Subtree is too tall: rebalance.
-        std::unique_ptr<KdNode>* tree_root;
-        if (tree->parent) {
-          KdNode* const parent = tree->parent;
-          if (parent->left.get() == tree) {
-            tree_root = &parent->left;
-          } else {
-            tree_root = &parent->right;
-          }
-        } else {
-          tree_root = &head_;
-        }
-        rebuild(*tree_root, node_count, dim);
+        *current_tree =
+            rebuild_recursive(dim, collection.begin(), collection.end());
+        (*current_tree)->parent = parent;
+        if (parent) revise_stats(parent);
         return;
       }
     }
-  }
-
-  static void rebuild(std::unique_ptr<KdNode>& tree_root, size_t node_count,
-                      size_t dim) {
-    KdNode* const parent = tree_root->parent;
-    std::vector<std::unique_ptr<KdNode>> nodes;
-    nodes.reserve(node_count);
-    collect_nodes(std::move(tree_root), &nodes);
-    tree_root = std::move(rebuild_recursive(dim, nodes.begin(), nodes.end()));
-    tree_root->parent = parent;
-    if (parent) revise_stats(parent);
-  }
-
-  static size_t count_nodes(KdNode* tree) {
-    return tree ? 1 + count_nodes(tree->left.get()) +
-                      count_nodes(tree->right.get())
-                : 0;
   }
 
   static void collect_nodes(std::unique_ptr<KdNode> node,
@@ -398,9 +380,9 @@ class ScapegoatKdMap {
   std::unique_ptr<KdNode> tree_pop_node(KdNode* const node) {
     KdNode* current = node;
     // Traverse down the deeper branch until we reach a leaf.
-    while (current->left || current->right) {
-      const auto left_depth = current->left ? current->left->height : 0;
-      if (current->right && current->right->height >= left_depth) {
+    while (current->height > 1) {
+      // Prefer to pick the rightmost deep leaf.
+      if (current->right && current->right->height == current->height - 1) {
         // Right subtree exists and is at least as deep as the left.
         current = current->right.get();
       } else {
@@ -443,15 +425,31 @@ class ScapegoatKdMap {
 
     // Check for tree balance.
     if (head_ && !tree_is_balanced(head_->height, size())) {
-      // Current is still the leaf node that we removed.
-      // Traverse upwards counting through dim so we can discover what dimension
-      // is the discriminant at popped_parent before rebalancing.
-      size_t dim = 0;
-      for (KdNode* n = popped_parent->parent; n; n = n->parent) {
-        dim = dim == dims - 1 ? 0 : dim + 1;
-      }
-      // dim is now the discriminant dim of popped_parent.
-      rebuild_one_ancestor(popped_parent, dim);
+      // If the tree is unbalanced after a removal, rebuild the whole tree.
+      std::vector<std::unique_ptr<KdNode>> collection;
+      collection.reserve(size());
+      collect_nodes(std::move(head_), &collection);
+      head_ = rebuild_recursive(0, collection.begin(), collection.end());
+      head_->parent = nullptr;
+
+      // Alternate method:
+
+      // // If the tree is unbalanced after a removal, rebuild some ancestor of
+      // // the deepest leaf in the tree.
+      // size_t dim = 0;
+      // current = head_.get();
+      // while (current->height > 1) {
+      //   // Prefer to rebalance from the leftmost deep leaf.
+      //   if (current->left && current->left->height == current->height - 1) {
+      //     current = current->left.get();
+      //   } else {
+      //     current = current->right.get();
+      //   }
+      //   dim = dim == dims - 1 ? 0 : dim + 1;
+      // }
+      // // current is now the deepest leaf in the tree and dim is its
+      // // discriminant.
+      // rebuild_one_ancestor(current, dim);
     }
     return std::move(popped);
   }
