@@ -99,8 +99,7 @@ struct ImageBuffer {
   }
 
   bool InBounds(Position pos) const {
-    return pos.x >= 0 && pos.y >= 0 && pos.x < static_cast<int>(width) &&
-           pos.y < static_cast<int>(height);
+    return pos.x >= 0 && pos.y >= 0 && pos.x < width && pos.y < height;
   }
 
   uint32_t& operator[](Position pos) { return buffer[pos.y * height + pos.x]; }
