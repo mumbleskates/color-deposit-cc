@@ -7,7 +7,7 @@ to an occupied space whose surrounding colors are *the most similar to it.* If a
 placement is chosen randomly from among the ties; this means that otherwise deterministic outputs
 have huge variation.
 
-[Excerpts and examples of the kinds of output you might see](https://imgur.com/a/LJuD4ya)
+[Excerpts and examples of the kinds of output you might see](https://imgur.com/a/CnTWV0G)
 
 Currently this implementation is single-threaded; this is mostly because it is far from trivial to
 perform these calculations in parallel, as each pixel's placement potentially (usually) affects the
