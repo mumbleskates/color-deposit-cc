@@ -351,16 +351,7 @@ class ScapegoatKdMap {
     return node;
   }
 
-  // Given a pointer to a node, removes that node's value from the tree.
-  // Some node is returned, along with its ownership.
-  //
-  // The returned node may not be the same as the node that was passed, but
-  // it will contain the key and value of the passed node. The returned node's
-  // parent pointer and mid are unspecified.
-  //
-  // No updates are made to the hash table pointer for the key being removed
-  // (the node that is passed in).
-  std::unique_ptr<KdNode> tree_pop_node(KdNode* const node) {
+  static KdNode* deepest_leaf_of(KdNode* const node) {
     KdNode* current = node;
     // Traverse down the deeper branch until we reach a leaf.
     while (current->height > 1) {
@@ -373,6 +364,20 @@ class ScapegoatKdMap {
         current = current->left.get();
       }
     }
+    return current;
+  }
+
+  // Given a pointer to a node, removes that node's value from the tree.
+  // Some node is returned, along with its ownership.
+  //
+  // The returned node may not be the same as the node that was passed, but
+  // it will contain the key and value of the passed node. The returned node's
+  // parent pointer and mid are unspecified.
+  //
+  // No updates are made to the hash table pointer for the key being removed
+  // (the node that is passed in).
+  std::unique_ptr<KdNode> tree_pop_node(KdNode* const node) {
+    KdNode* current = deepest_leaf_of(node);
     // Current is now the deepest node from this subtree. Detach it from the
     // tree into 'popped'.
     // Will equal 'current' when we take back its ownership.
@@ -408,31 +413,10 @@ class ScapegoatKdMap {
 
     // Check for tree balance.
     if (head_ && !tree_is_balanced(head_->height, size())) {
-      // If the tree is unbalanced after a removal, rebuild the whole tree.
-      std::vector<std::unique_ptr<KdNode>> collection;
-      collection.reserve(size());
-      collect_nodes(std::move(head_), &collection);
-      head_ = rebuild_recursive(0, collection.begin(), collection.end());
-      head_->parent = nullptr;
-
-      // Alternate method:
-
-      // // If the tree is unbalanced after a removal, rebuild some ancestor of
-      // // the deepest leaf in the tree.
-      // size_t dim = 0;
-      // current = head_.get();
-      // while (current->height > 1) {
-      //   // Prefer to rebalance from the leftmost deep leaf.
-      //   if (current->left && current->left->height == current->height - 1) {
-      //     current = current->left.get();
-      //   } else {
-      //     current = current->right.get();
-      //   }
-      //   dim = dim == dims - 1 ? 0 : dim + 1;
-      // }
-      // // current is now the deepest leaf in the tree and dim is its
-      // // discriminant.
-      // rebuild_one_ancestor(current, dim);
+      // If the tree is unbalanced after a removal, rebuild some ancestor of
+      // the deepest leaf in the tree.
+      rebuild_one_ancestor(deepest_leaf_of(head_.get()),
+                           (head_->height - 1) % dims);
     }
     return popped;
   }
