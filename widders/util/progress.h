@@ -9,6 +9,8 @@
 #include "absl/time/clock.h"
 #include "absl/time/time.h"
 
+namespace widders {
+
 struct ProgressStats {
   // ETA to reach specified target.
   inline absl::Duration eta(int64_t to_target_progress);
@@ -85,5 +87,7 @@ void Progress::update(int64_t progress) {
 }
 
 absl::Duration Progress::elapsed() { return absl::Now() - start_time_; }
+
+}  // namespace widders
 
 #endif  // CC_WIDDERS_UTIL_PROGRESS_H_

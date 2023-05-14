@@ -56,6 +56,9 @@ using std::endl;
 using std::flush;
 using std::string;
 using std::vector;
+using widders::Progress;
+using widders::ProgressOptions;
+using widders::ProgressStats;
 
 constexpr size_t kColorDims = 3;
 constexpr uint32_t kEmpty = ~0U;
