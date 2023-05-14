@@ -2,11 +2,18 @@
 	path = third_party/absl
 	url = https://github.com/abseil/abseil-cpp.git
 	branch = master
+[submodule "third_party/bazel/bazel_skylib"]
+	path = third_party/bazel/bazel_skylib
+	url = https://github.com/bazelbuild/bazel-skylib.git
+	branch = main
 [submodule "third_party/bazel/rules_cc"]
 	path = third_party/bazel/rules_cc
 	url = https://github.com/bazelbuild/rules_cc.git
-	branch = master
+	branch = main
 [submodule "third_party/lodepng"]
 	path = third_party/lodepng
 	url = https://github.com/lvandeve/lodepng.git
 	branch = master
+[submodule "third_party/bazel/bazel-skylib"]
+	path = third_party/bazel/bazel-skylib
+	url = https://github.com/bazelbuild/bazel-skylib.git
