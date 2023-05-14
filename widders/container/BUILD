@@ -12,7 +12,6 @@ cc_library(
     hdrs = ["scapegoat_kd_map.h"],
     deps = [
         ":kd_metrics",
-        "//widders/algorithm:medians",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/container:flat_hash_map",
     ],

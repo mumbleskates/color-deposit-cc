@@ -12,28 +12,11 @@
 
 #include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_map.h"
-#include "widders/algorithm/medians.h"
 #include "widders/container/kd_metrics.h"
 
 namespace widders {
 
 using ::std::size_t;
-
-template <typename NodeType>
-struct MedianOfMediansPolicy {
-  using VecIter = typename std::vector<std::unique_ptr<NodeType>>::iterator;
-  static VecIter PartitionAtMedian(VecIter start, VecIter end, size_t dim) {
-    return widders::PartitionAtMedianOfMedians(
-        start, end,
-        [dim](const std::unique_ptr<NodeType>& a,
-              const std::unique_ptr<NodeType>& b) -> bool {
-          // Compare first on the point at dim; tiebreak with pointer value
-          return a->val[dim] < b->val[dim] ||
-                 (a->val[dim] == b->val[dim] && a < b);
-        });
-  }
-  static constexpr bool kBalanceGuaranteed = false;
-};
 
 template <typename NodeType>
 struct ExactMedianPolicy {
@@ -57,7 +40,7 @@ struct ExactMedianPolicy {
 
 // TODO(widders): doc
 template <size_t dims, typename Dimension, typename Key,
-          template <typename> class MedianPolicy = MedianOfMediansPolicy>
+          template <typename> class MedianPolicy = ExactMedianPolicy>
 class ScapegoatKdMap {
   static_assert(dims > 0, "k-d tree with less than 1 dimension");
 
