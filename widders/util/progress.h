@@ -22,10 +22,16 @@ struct ProgressStats {
 };
 
 struct ProgressOptions {
-  std::function<void(ProgressStats)> output_function = nullptr;
+  // Function invoked whenever progress is updated.
+  std::function<void(ProgressStats)> output_function;
+  // Target duration between updates.
   absl::Duration target_output_interval = absl::Seconds(0.5);
+  // Initial progress.
   int64_t initial_progress = 0;
-  int64_t first_output_progress = 1024;
+  // Weighting given to update speed over the last update interval vs. over the
+  // entire duration. The higher this number the more variable the ETA will be
+  // based upon recent update speed vs. overall average speed so far.
+  double harmonic_recent_weight = 0.2;
 };
 
 class Progress {
@@ -33,11 +39,12 @@ class Progress {
   explicit Progress(ProgressOptions options = {})
       : output_(std::move(options.output_function)),
         target_output_interval_(options.target_output_interval),
+        harmonic_recent_weight_(options.harmonic_recent_weight),
         initial_progress_(options.initial_progress),
         start_time_(absl::Now()),
         last_output_progress_(options.initial_progress),
-        next_check_progress_(options.first_output_progress),
-        last_output_time_(start_time_) {}
+        last_output_time_(start_time_),
+        next_check_time_(start_time_ + target_output_interval_) {}
 
   // Update progress to output function if we should.
   inline void update(int64_t progress);
@@ -47,46 +54,45 @@ class Progress {
  private:
   const std::function<void(ProgressStats)> output_;
   const absl::Duration target_output_interval_;
+  const double harmonic_recent_weight_;
   const int64_t initial_progress_;
   const absl::Time start_time_;
 
   int64_t last_output_progress_;
-  int64_t next_check_progress_;
   absl::Time last_output_time_;
+  absl::Time next_check_time_;
 };
 
 // -------------------------------------------------------------------------- //
 
-absl::Duration ProgressStats::eta(int64_t to_target_progress) {
+inline absl::Duration ProgressStats::eta(int64_t to_target_progress) {
   return absl::Seconds(static_cast<double>(to_target_progress - progress) /
                        harmonic_update_rate);
 }
 
-void Progress::update(int64_t progress) {
-  if (progress < next_check_progress_) return;
-
-  const absl::Time actual_now_time = absl::Now();
-  const absl::Time now_time =
-      std::max(actual_now_time, last_output_time_ + absl::Microseconds(10));
+inline void Progress::update(int64_t progress) {
+  const absl::Time now_time = absl::Now();
+  if (now_time < next_check_time_) return;
   const absl::Duration elapsed = now_time - start_time_;
   const absl::Duration since_last_output = now_time - last_output_time_;
   const int64_t progress_made = progress - last_output_progress_;
   const double recent_rate =
       progress_made / absl::ToDoubleSeconds(since_last_output);
   const double harmonic_rate =
-      2.0 /
-      (1 / recent_rate + absl::ToDoubleSeconds(elapsed) /
-                             static_cast<double>(progress - initial_progress_));
-  last_output_time_ = actual_now_time;
+      (1.0 + harmonic_recent_weight_) /
+      (harmonic_recent_weight_ / recent_rate +
+       absl::ToDoubleSeconds(elapsed) /
+           static_cast<double>(progress - initial_progress_));
+  last_output_time_ = now_time;
   last_output_progress_ = progress;
-  next_check_progress_ =
-      progress +
-      static_cast<int64_t>(harmonic_rate *
-                           absl::ToDoubleSeconds(target_output_interval_));
-  output_({progress, elapsed, recent_rate, harmonic_rate});
+  next_check_time_ = now_time + target_output_interval_;
+  output_({.progress = progress,
+           .elapsed = elapsed,
+           .recent_update_rate = recent_rate,
+           .harmonic_update_rate = harmonic_rate});
 }
 
-absl::Duration Progress::elapsed() { return absl::Now() - start_time_; }
+inline absl::Duration Progress::elapsed() { return absl::Now() - start_time_; }
 
 }  // namespace widders
 
