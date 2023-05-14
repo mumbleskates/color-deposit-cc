@@ -365,7 +365,7 @@ class ScapegoatKdMap {
     // Fix node's metadata
     node->height = 1 + std::max(left_depth, right_depth);
     node->mid = node->val[dim];
-    return std::move(node);
+    return node;
   }
 
   // Given a pointer to a node, removes that node's value from the tree.
@@ -451,7 +451,7 @@ class ScapegoatKdMap {
       // // discriminant.
       // rebuild_one_ancestor(current, dim);
     }
-    return std::move(popped);
+    return popped;
   }
 
   // Insert the given node into the tree.
