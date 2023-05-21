@@ -9,7 +9,8 @@
 using std::cbrt;
 using std::pow;
 
-namespace {
+namespace widders::color {
+namespace detail {
 
 template <typename Ch>
 inline constexpr Ch SRGBChannelToLinear(const Ch& ch) {
@@ -23,9 +24,7 @@ inline constexpr Ch XYZChannelToLABChannel(const Ch& ch) {
                                   : ch * Ch(7.787) + Ch(16.0 / 116.0);
 }
 
-}  // namespace
-
-namespace color {
+}  // namespace detail
 
 template <typename Ch>
 using Color = std::array<Ch, 3>;
@@ -65,9 +64,9 @@ inline constexpr Color<Ch> SRGBToLinearRGB(const Color<Ch>& from) {
   const Ch& r = from[0];
   const Ch& g = from[1];
   const Ch& b = from[2];
-  return {{SRGBChannelToLinear(r),  //
-           SRGBChannelToLinear(g),  //
-           SRGBChannelToLinear(b)}};
+  return {{detail::SRGBChannelToLinear(r),  //
+           detail::SRGBChannelToLinear(g),  //
+           detail::SRGBChannelToLinear(b)}};
 }
 
 template <typename Ch>
@@ -83,9 +82,9 @@ inline constexpr Color<Ch> LinearRGBToXYZ(const Color<Ch>& from) {
 
 template <typename Ch>
 inline constexpr Color<Ch> XYZToLAB(const Color<Ch>& from) {
-  Ch x = XYZChannelToLABChannel(from[0]);
-  Ch y = XYZChannelToLABChannel(from[1]);
-  Ch z = XYZChannelToLABChannel(from[2]);
+  Ch x = detail::XYZChannelToLABChannel(from[0]);
+  Ch y = detail::XYZChannelToLABChannel(from[1]);
+  Ch z = detail::XYZChannelToLABChannel(from[2]);
   Ch l = y * Ch(116.0) - Ch(16.0);
   Ch a = (x - y) * Ch(500.0);
   Ch b = (y - z) * Ch(200.0);
@@ -94,9 +93,9 @@ inline constexpr Color<Ch> XYZToLAB(const Color<Ch>& from) {
 
 template <typename Ch>
 inline constexpr Color<Ch> XYZToLUV(const Color<Ch>& from) {
-  Ch x = XYZChannelToLABChannel(from[0]);
-  Ch y = XYZChannelToLABChannel(from[1]);
-  Ch z = XYZChannelToLABChannel(from[2]);
+  Ch x = detail::XYZChannelToLABChannel(from[0]);
+  Ch y = detail::XYZChannelToLABChannel(from[1]);
+  Ch z = detail::XYZChannelToLABChannel(from[2]);
   Ch denom = x + Ch(15.0) * y + Ch(3.0) * z;
   Ch u, v;
   if (denom == Ch(0.0)) {
@@ -106,13 +105,13 @@ inline constexpr Color<Ch> XYZToLUV(const Color<Ch>& from) {
     u = Ch(4.0) * x / denom;
     v = Ch(9.0) * y / denom;
   }
-  Ch lab_y = XYZChannelToLABChannel(y);
+  Ch lab_y = detail::XYZChannelToLABChannel(y);
   Ch l = lab_y * Ch(116.0) + Ch(16.0);
   u = l * Ch(13.0) * (u - Ch(4.0 / 19.0));
   v = l * Ch(13.0) * (v - Ch(9.0 / 19.0));
   return {{l, u, v}};
 }
 
-}  // namespace color
+}  // namespace widders::color
 
 #endif  // COLORS_COLOR_CONVERSION_H_

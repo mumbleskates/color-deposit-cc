@@ -11,6 +11,7 @@ cc_binary(
     deps = [
         ":color_conversion",
         "//third_party:lodepng",
+        "//widders/container:kd_common",
         "//widders/container:scapegoat_kd_map",
         "//widders/util:progress",
         "@com_google_absl//absl/algorithm:container",
@@ -20,6 +21,5 @@ cc_binary(
         "@com_google_absl//absl/flags:usage",
         "@com_google_absl//absl/random",
         "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/types:variant",
     ],
 )

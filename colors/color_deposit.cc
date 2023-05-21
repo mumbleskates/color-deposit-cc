@@ -5,6 +5,7 @@
 #include <functional>
 #include <iostream>
 #include <string>
+#include <variant>
 #include <vector>
 
 #include "absl/algorithm/container.h"
@@ -18,7 +19,6 @@
 #include "absl/strings/numbers.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_split.h"
-#include "absl/types/variant.h"
 #include "colors/color_conversion.h"
 #include "third_party/lodepng/lodepng.h"
 #include "widders/container/kd_metrics.h"
@@ -31,6 +31,8 @@ ABSL_FLAG(std::string, color_metric, "lab",
           "The type of color metric to determine similar colors (one of lab, "
           "luv, xyz, rgb, srgb).");
 // TODO(widders): Hilbert... and zigzag?
+// TODO(widders): Mode to read from existing file in some order and re-deposit
+//  instead of using all-colors
 ABSL_FLAG(
     std::string, ordering, "shuffle",
     "The order in which colors are added to the image. Possible values are "
@@ -50,15 +52,24 @@ ABSL_FLAG(
     "'x,y' with exact integer pixel coordinates, or 'x.xx%,y.yy%' for floating "
     "point percentage coordinates relative to the size of the image.");
 // TODO(widders): dimensions: square, tall, wide
+// TODO(widders): try out slightly fuzzing choice of best placement
+//  (cheapening lookup)
 
 using std::cout;
 using std::endl;
 using std::flush;
+using std::size_t;
 using std::string;
 using std::vector;
 using widders::Progress;
 using widders::ProgressOptions;
 using widders::ProgressStats;
+using widders::color::ExtractSRGB;
+using widders::color::LinearRGBToXYZ;
+using widders::color::RenderABGR;
+using widders::color::SRGBToLinearRGB;
+using widders::color::XYZToLAB;
+using widders::color::XYZToLUV;
 
 constexpr size_t kColorDims = 3;
 constexpr uint32_t kEmpty = ~0U;
@@ -67,17 +78,13 @@ constexpr int kAllColorImageWidth = 1U << 12U;
 constexpr int kAllColorImageHeight = 1U << 12U;
 
 struct Position {
-  int x;
-  int y;
+  int32_t x;
+  int32_t y;
 
-  bool operator==(const Position& other) const {
-    return x == other.x && y == other.y;
-  }
-  bool operator<(const Position& other) const {
-    return y < other.y || (y == other.y && x < other.x);
-  }
+  constexpr bool operator==(const Position& other) const = default;
+  constexpr auto operator<=>(const Position& other) const = default;
   Position operator+(const Position& other) const {
-    return {x + other.x, y + other.y};
+    return {.x = x + other.x, .y = y + other.y};
   }
   template <typename H>
   friend H AbslHashValue(H h, const Position& c) {
@@ -118,22 +125,33 @@ struct ImageBuffer {
 // Type for each color channel field.
 using Field = double;
 // Type for the frontier set.
-using ColorMap = widders::ScapegoatKdMap<kColorDims, Field, Position>;
-using Color = color::Color<Field>;
+using Color = widders::color::Color<Field>;
+using ColorMap = widders::ScapegoatKdMap<Position, Color, widders::NoStatistic,
+                                         std::ratio<6, 5>>;
 using ColorPair = std::pair<uint32_t, Color>;
 using ColorMetric = std::function<Color(uint32_t int_srgb)>;
 
 // Offsets from any occupied pixel to any unoccupied pixel that is valid for
 // placement.
-const Position kFrontierOffsets[] = {{-1, 0}, {0, -1}, {1, 0}, {0, 1}};
+constexpr Position kFrontierOffsets[] = {
+    {.x = -1, .y = 0},  //
+    {.x = 0, .y = -1},  //
+    {.x = 1, .y = 0},   //
+    {.x = 0, .y = 1},   //
+};
 // Sampling convolution; (offset, weight) pairs that are summed together for all
 // occupied pixels near a frontier pixel that determine its 'neighboring' color
 // value, and thus the color value that would most like to be placed there.
-const std::pair<Position, Field> kSamples[] =       // NOLINT(cert-err58-cpp)
-    {{{-1, +0}, 1}, {{-1, -1}, 1 / std::sqrt(2)},   //
-     {{+0, -1}, 1}, {{+1, -1}, 1 / std::sqrt(2)},   //
-     {{+1, +0}, 1}, {{+1, +1}, 1 / std::sqrt(2)},   //
-     {{+0, +1}, 1}, {{-1, +1}, 1 / std::sqrt(2)}};  //
+const std::pair<Position, Field> kSamples[] = {
+    {{.x = -1, .y = +0}, 1},                 //
+    {{.x = -1, .y = -1}, 1 / std::sqrt(2)},  //
+    {{.x = +0, .y = -1}, 1},                 //
+    {{.x = +1, .y = -1}, 1 / std::sqrt(2)},  //
+    {{.x = +1, .y = +0}, 1},                 //
+    {{.x = +1, .y = +1}, 1 / std::sqrt(2)},  //
+    {{.x = +0, .y = +1}, 1},                 //
+    {{.x = -1, .y = +1}, 1 / std::sqrt(2)},  //
+};
 
 // A pair of functions for generating and then (if necessary) reordering colors
 // before placement on the canvas.
@@ -150,42 +168,42 @@ ColorMetric GetColorMetric(const string& metric_name) {
   return absl::flat_hash_map<string, ColorMetric>{
       {"srgb",
        [](uint32_t int_srgb) {
-         Color srgb = color::ExtractSRGB<Field>(int_srgb);
+         Color srgb = ExtractSRGB<Field>(int_srgb);
          return srgb;
        }},
       {"rgb",
        [](uint32_t int_srgb) {
-         Color srgb = color::ExtractSRGB<Field>(int_srgb);
-         Color linear_srgb = color::SRGBToLinearRGB(srgb);
+         Color srgb = ExtractSRGB<Field>(int_srgb);
+         Color linear_srgb = SRGBToLinearRGB(srgb);
          return linear_srgb;
        }},
       {"xyz",
        [](uint32_t int_srgb) {
-         Color srgb = color::ExtractSRGB<Field>(int_srgb);
-         Color linear_srgb = color::SRGBToLinearRGB(srgb);
-         Color xyz = color::LinearRGBToXYZ(linear_srgb);
+         Color srgb = ExtractSRGB<Field>(int_srgb);
+         Color linear_srgb = SRGBToLinearRGB(srgb);
+         Color xyz = LinearRGBToXYZ(linear_srgb);
          return xyz;
        }},
       {"lab",
        [](uint32_t int_srgb) {
-         Color srgb = color::ExtractSRGB<Field>(int_srgb);
-         Color linear_srgb = color::SRGBToLinearRGB(srgb);
-         Color xyz = color::LinearRGBToXYZ(linear_srgb);
-         Color lab = color::XYZToLAB(xyz);
+         Color srgb = ExtractSRGB<Field>(int_srgb);
+         Color linear_srgb = SRGBToLinearRGB(srgb);
+         Color xyz = LinearRGBToXYZ(linear_srgb);
+         Color lab = XYZToLAB(xyz);
          return lab;
        }},
       {"luv", [](uint32_t int_srgb) {
-         Color srgb = color::ExtractSRGB<Field>(int_srgb);
-         Color linear_srgb = color::SRGBToLinearRGB(srgb);
-         Color xyz = color::LinearRGBToXYZ(linear_srgb);
-         Color luv = color::XYZToLUV(xyz);
+         Color srgb = ExtractSRGB<Field>(int_srgb);
+         Color linear_srgb = SRGBToLinearRGB(srgb);
+         Color xyz = LinearRGBToXYZ(linear_srgb);
+         Color luv = XYZToLUV(xyz);
          return luv;
        }}}[metric_name];
 }
 
 // Parses values for the 'ordering' flag and returns functions for producing the
 // corresponding ordering of colors for placement.
-absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
+std::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
   const auto identity = [](uint32_t c) { return c; };
   enum OrderClass {
     UNKNOWN,
@@ -193,7 +211,7 @@ absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
     LUV,
     XYZ,
   };
-  constexpr char kOrderClassError[] =
+  constexpr std::string_view kOrderClassError =
       "Ordering channels must all come from the same colorspace (rgb, luv, "
       "xyz).";
 
@@ -203,14 +221,19 @@ absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
   };
 
   if (ordering_name == "shuffle") {
-    return ColorOrder{identity, true, nullptr, nullptr};
+    return ColorOrder{.map_channels = identity,
+                      .should_shuffle = true,
+                      .sort_metric = nullptr,
+                      .do_sort = nullptr};
   } else {
     std::pair<string, string> split =
         absl::StrSplit(ordering_name, absl::MaxSplits(absl::ByChar(':'), 1));
-    if (split.second.empty()) {
+    auto& [ordering_class, ordering_options] = split;
+    if (ordering_options.empty()) {
       return "Expected 'shuffle' or 'class:options' for ordering.";
-    } else if (split.first == "ordered") {
-      vector<string> options = absl::StrSplit(split.second, absl::ByLength(2));
+    } else if (ordering_class == "ordered") {
+      vector<string> options =
+          absl::StrSplit(ordering_options, absl::ByLength(2));
       if (options.size() > 3) {
         return "Too many ordering options; expected 1-3";
       }
@@ -254,7 +277,7 @@ absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
               part.channel = 0;
               break;
             } else {
-              return kOrderClassError;
+              return string(kOrderClassError);
             }
           }
           case 'g': {
@@ -263,7 +286,7 @@ absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
               part.channel = 1;
               break;
             } else {
-              return kOrderClassError;
+              return string(kOrderClassError);
             }
           }
           case 'b': {
@@ -272,7 +295,7 @@ absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
               part.channel = 2;
               break;
             } else {
-              return kOrderClassError;
+              return string(kOrderClassError);
             }
           }
           case 'l': {
@@ -281,7 +304,7 @@ absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
               part.channel = 0;
               break;
             } else {
-              return kOrderClassError;
+              return string(kOrderClassError);
             }
           }
           case 'u': {
@@ -290,7 +313,7 @@ absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
               part.channel = 1;
               break;
             } else {
-              return kOrderClassError;
+              return string(kOrderClassError);
             }
           }
           case 'v': {
@@ -299,7 +322,7 @@ absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
               part.channel = 2;
               break;
             } else {
-              return kOrderClassError;
+              return string(kOrderClassError);
             }
           }
           case 'x': {
@@ -308,7 +331,7 @@ absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
               part.channel = 0;
               break;
             } else {
-              return kOrderClassError;
+              return string(kOrderClassError);
             }
           }
           case 'y': {
@@ -317,7 +340,7 @@ absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
               part.channel = 1;
               break;
             } else {
-              return kOrderClassError;
+              return string(kOrderClassError);
             }
           }
           case 'z': {
@@ -326,7 +349,7 @@ absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
               part.channel = 2;
               break;
             } else {
-              return kOrderClassError;
+              return string(kOrderClassError);
             }
           }
           default: {
@@ -341,17 +364,21 @@ absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
         // All three channels are represented; we can just map the input colors,
         // without shuffling or sorting.
         return ColorOrder{
-            [ordering_parts](uint32_t input) {
-              uint32_t result = 0;
-              for (int i = 0; i < 3; ++i) {
-                const auto& part = ordering_parts[i];
-                uint32_t input_ch = (input & (0xffU << (8U * i))) >> (8U * i);
-                result |= (part.descending ? 255U - input_ch : input_ch)
-                          << (8 * part.channel);
-              }
-              return result;
-            },
-            false, nullptr, nullptr};
+            .map_channels =
+                [ordering_parts](uint32_t input) {
+                  uint32_t result = 0;
+                  for (int i = 0; i < 3; ++i) {
+                    const auto& part = ordering_parts[i];
+                    uint32_t input_ch =
+                        (input & (0xffU << (8U * i))) >> (8U * i);
+                    result |= (part.descending ? 255U - input_ch : input_ch)
+                              << (8 * part.channel);
+                  }
+                  return result;
+                },
+            .should_shuffle = false,
+            .sort_metric = nullptr,
+            .do_sort = nullptr};
       } else {
         // Some channels are not represented; shuffle the input colors first,
         // then sort.
@@ -374,44 +401,47 @@ absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
           }
         }
 
-        return ColorOrder{identity, true, metric,
-                          [ordering_parts](vector<ColorPair>* colors) -> void {
-                            absl::c_stable_sort(
-                                *colors,
-                                [ordering_parts](const ColorPair& a,
-                                                 const ColorPair& b) -> bool {
-                                  for (const auto& part : ordering_parts) {
-                                    Field a_chan = a.second[part.channel];
-                                    Field b_chan = b.second[part.channel];
-                                    if (a_chan == b_chan) continue;
-                                    return (a_chan < b_chan) ^ part.descending;
-                                  }
-                                  return false;  // Completely equal.
-                                });
-                          }};
+        return ColorOrder{
+            .map_channels = identity,
+            .should_shuffle = true,
+            .sort_metric = metric,
+            .do_sort = [ordering_parts](vector<ColorPair>* colors) -> void {
+              absl::c_stable_sort(*colors,
+                                  [ordering_parts](const ColorPair& a,
+                                                   const ColorPair& b) -> bool {
+                                    for (const auto& part : ordering_parts) {
+                                      Field a_chan = a.second[part.channel];
+                                      Field b_chan = b.second[part.channel];
+                                      if (a_chan == b_chan) continue;
+                                      return (a_chan < b_chan) ^
+                                             part.descending;
+                                    }
+                                    return false;  // Completely equal.
+                                  });
+            }};
       }
     } else {
-      return "Unrecognized ordering class: " + split.first;
+      return "Unrecognized ordering class: " + ordering_class;
     }
   }
 }
 
 // Parses the origin location for the deposit process.
-absl::variant<string, Position> ParseOrigin(const string& origin_string,
-                                            const ImageBuffer& image,
-                                            absl::BitGen& rng) {
+std::variant<string, Position> ParseOrigin(const string& origin_string,
+                                           const ImageBuffer& image,
+                                           absl::BitGen& rng) {
   if (origin_string == "center") {
-    return Position{image.width / 2, image.height / 2};
+    return Position{.x = image.width / 2, .y = image.height / 2};
   }
   if (origin_string == "random") {
     return Position{
-        absl::Uniform(absl::IntervalClosedOpen, rng, 0, image.width),
-        absl::Uniform(absl::IntervalClosedOpen, rng, 0, image.height),
+        .x = absl::Uniform(absl::IntervalClosedOpen, rng, 0, image.width),
+        .y = absl::Uniform(absl::IntervalClosedOpen, rng, 0, image.height),
     };
   }
   std::pair<string, string> coords =
       absl::StrSplit(origin_string, absl::MaxSplits(absl::ByChar(','), 1));
-  std::string &x = coords.first, y = coords.second;
+  auto& [x, y] = coords;
   absl::StripAsciiWhitespace(&x);
   absl::StripAsciiWhitespace(&y);
   if (y.empty() || (absl::EndsWith(x, "%") != absl::EndsWith(y, "%"))) {
@@ -434,8 +464,8 @@ absl::variant<string, Position> ParseOrigin(const string& origin_string,
       int x_exact = static_cast<int>(image.width * (x_percent / 100.0));
       int y_exact = static_cast<int>(image.height * (y_percent / 100.0));
       return Position{
-          std::min(image.width - 1, x_exact),
-          std::min(image.height - 1, y_exact),
+          .x = std::min(image.width - 1, x_exact),
+          .y = std::min(image.height - 1, y_exact),
       };
     } else {
       return "Could not parse origin percentages.";
@@ -463,12 +493,12 @@ absl::variant<string, Position> ParseOrigin(const string& origin_string,
   }
 }
 
-// RNG instance
-static absl::BitGen rng;
-
 int main(int argc, char* argv[]) {
   absl::SetProgramUsageMessage("Color deposit: growing images like crystals.");
-  const std::vector<char*> cmd_args = absl::ParseCommandLine(argc, argv);
+  std::vector<char*> cmd_args = absl::ParseCommandLine(argc, argv);
+
+  // TODO(widders): variations for all-color generation vs permuting existing
+  //  images
 
   const ColorMetric metric = GetColorMetric(absl::GetFlag(FLAGS_color_metric));
   if (!metric) {
@@ -476,11 +506,11 @@ int main(int argc, char* argv[]) {
     return 1;
   }
   const auto maybe_ordering = ParseOrdering(absl::GetFlag(FLAGS_ordering));
-  if (absl::holds_alternative<string>(maybe_ordering)) {
-    cout << absl::get<string>(maybe_ordering) << endl;
+  if (std::holds_alternative<string>(maybe_ordering)) {
+    cout << std::get<string>(maybe_ordering) << endl;
     return 1;
   }
-  const auto& ordering = absl::get<ColorOrder>(maybe_ordering);
+  const auto& ordering = std::get<ColorOrder>(maybe_ordering);
 
   vector<ColorPair> color_values;
   color_values.reserve(kAllColorImageWidth * kAllColorImageHeight);
@@ -492,9 +522,15 @@ int main(int argc, char* argv[]) {
   }
   cout << "done" << endl;
 
+  // RNG instance
+  static absl::BitGen rng_inst;
+  struct rng {
+    auto operator()() { return rng_inst(); }
+  };
+
   if (ordering.should_shuffle) {
     cout << "Shuffling..." << flush;
-    std::shuffle(color_values.begin(), color_values.end(), rng);
+    std::shuffle(color_values.begin(), color_values.end(), rng_inst);
     cout << "done" << endl;
   }
   if (ordering.sort_metric) {
@@ -517,15 +553,15 @@ int main(int argc, char* argv[]) {
   cout << "done" << endl;
 
   auto image = ImageBuffer::OfSize(kAllColorImageWidth, kAllColorImageHeight);
-  auto maybe_origin = ParseOrigin(absl::GetFlag(FLAGS_origin), image, rng);
-  if (absl::holds_alternative<string>(maybe_origin)) {
-    cout << "Error: " << absl::get<string>(maybe_origin) << endl;
+  auto maybe_origin = ParseOrigin(absl::GetFlag(FLAGS_origin), image, rng_inst);
+  if (std::holds_alternative<string>(maybe_origin)) {
+    cout << "Error: " << std::get<string>(maybe_origin) << endl;
     return 1;
   }
-  auto origin = absl::get<Position>(maybe_origin);
+  auto origin = std::get<Position>(maybe_origin);
 
   cout << "Filling..." << flush;
-  auto frontier = ColorMap(1.4);
+  auto frontier = ColorMap();
   ProgressOptions progress_options;
   progress_options.output_function =
       [&frontier, image_size = image.size()](ProgressStats stats) {
@@ -537,25 +573,25 @@ int main(int argc, char* argv[]) {
       };
   Progress progress(progress_options);
 
-  using Distance =
-      widders::TiebreakingDistance<widders::EuclideanDistance<long double>,
-                                   widders::RandomTiebreak<decltype(rng), rng>>;
-
   // Create initial frontier.
-  frontier.set({origin.x, origin.y}, Color());
+  frontier.set(origin, Color());
   // Repeatedly place a pixel in the image, updating the frontier set and all
   // affected color values of neighboring frontier pixels.
   const bool logging_enabled = absl::GetFlag(FLAGS_log_progress);
   for (size_t i = 0; i < image.size(); ++i) {
     if (logging_enabled) progress.update(i);
-    auto result = frontier.nearest<Distance>(color_values[i].second);
+    using Distance = widders::EuclideanDistanceMetric<double>;
+    auto search =
+        frontier.search<widders::NearestRandomTiebreak, Distance, rng>(
+            color_values[i].second);
 #ifdef KD_TREE_DEBUG
 #ifdef NDEBUG
 #error NDEBUG disables compilation of k-d tree validation.
-#endif
+#endif  // NDEBUG
     frontier.validate();
-#endif
-    const Position& pos = result.key;
+#endif  // KD_TREE_DEBUG
+    auto result = *search.result();
+    const auto& [pos, val] = result;
     frontier.erase(pos);
     image[pos] = static_cast<uint32_t>(i);
     for (const Position& f_delta : kFrontierOffsets) {
@@ -567,9 +603,7 @@ int main(int argc, char* argv[]) {
       // Sum surrounding points for the new value of this frontier.
       auto new_mean = Color();
       Field total_weight = 0;
-      for (const auto& sample : kSamples) {
-        const Position& s_delta = sample.first;
-        const Field& sample_weight = sample.second;
+      for (const auto& [s_delta, sample_weight] : kSamples) {
         Position sample_pos = frontier_pos + s_delta;
         if (!image.InBounds(sample_pos)) continue;
         const uint32_t sample_idx = image[sample_pos];
@@ -586,17 +620,17 @@ int main(int argc, char* argv[]) {
       frontier.set(frontier_pos, new_mean);
 #ifdef KD_TREE_DEBUG
       frontier.validate();
-#endif
+#endif  // KD_TREE_DEBUG
     }
   }
-  absl::Duration elapsed = progress.elapsed();
+  auto elapsed = progress.elapsed();
   cout << "done; Total " << absl::Trunc(elapsed, absl::Seconds(0.1))
        << "; Average " << image.size() / absl::ToDoubleSeconds(elapsed)
        << " px/s" << endl;
 
   cout << "Unwrapping colors..." << flush;
   for (auto& pixel : image.buffer) {
-    pixel = color::RenderABGR(color_values[pixel].first);
+    pixel = RenderABGR(color_values[pixel].first);
   }
   cout << "done" << endl;
 

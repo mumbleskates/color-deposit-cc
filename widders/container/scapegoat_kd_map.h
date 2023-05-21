@@ -4,93 +4,74 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <compare>
 #include <cstddef>
 #include <limits>
 #include <memory>
+#include <ratio>
+#include <tuple>
 #include <utility>
 #include <vector>
 
-#include "absl/algorithm/container.h"
 #include "absl/container/flat_hash_map.h"
 #include "widders/container/kd_metrics.h"
+#include "widders/container/kd_searchers.h"
+#include "widders/container/kd_value_traits.h"
 
 namespace widders {
 
 using ::std::size_t;
 
-template <typename NodeType>
-struct ExactMedianPolicy {
-  using VecIter = typename std::vector<std::unique_ptr<NodeType>>::iterator;
-  static VecIter PartitionAtMedian(VecIter start, VecIter end, size_t dim) {
-    auto middle = start + (end - start) / 2;
-    std::nth_element(start, middle, end,
-                     [dim](const std::unique_ptr<NodeType>& a,
-                           const std::unique_ptr<NodeType>& b) -> bool {
-                       // Compare first on the point at dim; tiebreak with
-                       // pointer value
-                       return a->val[dim] < b->val[dim] ||
-                              (a->val[dim] == b->val[dim] && a < b);
-                     });
-    return middle;
-  }
-  static constexpr bool kBalanceGuaranteed = true;
-};
-
 // --------------------------------------------------------------------------
 
-// TODO(widders): doc
-template <size_t dims, typename Dimension, typename Key,
-          template <typename> class MedianPolicy = ExactMedianPolicy>
-class ScapegoatKdMap {
-  static_assert(dims > 0, "k-d tree with less than 1 dimension");
+struct NoStatistic;
 
-  struct KdNode;
+// TODO(widders): doc
+template <typename Key, typename Value, typename Statistic = NoStatistic,
+          typename balance_ratio = std::ratio<3, 2>>
+class ScapegoatKdMap {
+  constexpr static size_t dims = dimensions_of<Value>;
+  using Dimension = dimension_type<Value>;
+
+  static_assert(dims > 0, "k-d tree with less than 1 dimension");
+  // 1.0 represents the minimum possible height of a binary tree of a given
+  // size. Values less than 1.0 will result in a highly unbalanced tree that
+  // continually rebuilds only its tiniest ends.
+  static_assert(static_cast<double>(balance_ratio::num) /
+                        static_cast<double>(balance_ratio::den) >
+                    1.0,
+                "balance_ratio must be greater than 1.0");
 
   // TODO(widders): maybe memoize
   inline bool tree_is_balanced(uint32_t height, size_t node_count) const {
-    // 1 + (implicit) floor of (log2 of ^ tree node count multiplied by the
+    // 2 + (implicit) floor of (log2 of tree node count multiplied by the
     //                               height balance we maintain)
-    return height <= 1 + static_cast<uint32_t>(std::log2f(node_count) *
-                                               max_height_factor_);
+    // We add 2 instead of just 1 because the tree "height" statistic we
+    // maintain is 1 for a tree with no children, for simplicity; this is 1 more
+    // than the "height" of a tree in the literature, but it also means an empty
+    // tree has a different height than a tree with 1 node.
+    return height <=
+           2 + static_cast<uint32_t>(
+                   std::log2f(static_cast<float>(node_count)) *
+                   static_cast<float>(static_cast<double>(balance_ratio::num) /
+                                      static_cast<double>(balance_ratio::den)));
   }
+
+  struct KdNode;
 
  public:
-  using Point = std::array<Dimension, dims>;
+  using key = Key;
+  using value = Value;
 
-  // Struct for results of a tree search.
-  template <typename DistanceType>
-  struct NearestResult {
-    NearestResult() = default;
-    explicit NearestResult(const DistanceType& dist) : distance(dist) {}
-
-    bool operator<(const NearestResult& other) const {
-      return distance < other.distance;
-    };
-
-    Key key = {};
-    const Point* val = nullptr;
-    DistanceType distance = {};
-#ifdef KD_SEARCH_STATS
-    size_t nodes_searched = 0;
-#endif
-  };
-
-  explicit ScapegoatKdMap(float balance_factor = 1.5)
-      : max_height_factor_(balance_factor) {
-    // 1.0 represents the minimum possible height of a binary tree of
-    // a given size.
-    // Values less than 1.0 will result in a highly unbalanced tree that
-    // continually rebuilds only its tiniest ends; values less than
-    // log(5)/log(3) ~= 1.465 are not guaranteed to behave well either,
-    // in the worst case, as the median-of-medians that chooses the pivot
-    // for rebuilding a subtree does not have guarantees better than this.
-    assert(max_height_factor_ >= 1.0);
-  }
+  ScapegoatKdMap() = default;
   // Move constructor
   ScapegoatKdMap(ScapegoatKdMap&& move_from) noexcept = default;
+  ScapegoatKdMap& operator=(ScapegoatKdMap&& move_from) noexcept = default;
   // TODO(widders): Add constructor(s) for preexisting value sets all at once
   // Disable copy construction for now
   ScapegoatKdMap(ScapegoatKdMap& copy_from) = delete;
+  ScapegoatKdMap& operator=(ScapegoatKdMap& copy_from) = delete;
+  ~ScapegoatKdMap() = default;
 
   // Return the number of items in the tree.
   size_t size() const { return items_.size(); }
@@ -106,8 +87,8 @@ class ScapegoatKdMap {
   // Return the point value of the given key.
   // Raises if the key does not exist in the tree.
   // Takes O(1) time.
-  const Point& get(const Key& key) const { return items_.at(key)->val; }
-  const Point& operator[](const Key& key) const { return get(key); }
+  const Value& get(const Key& key) const { return items_.at(key)->val; }
+  const Value& operator[](const Key& key) const { return get(key); }
   // Returns true if the key is in the tree, false otherwise.
   // Takes O(1) time.
   bool contains(const Key& key) const { return items_.contains(key); }
@@ -118,7 +99,7 @@ class ScapegoatKdMap {
   // Set the point value of the given key.
   // If the key already exists in the tree, its value will be changed.
   // Takes O(height) time.
-  void set(const Key& key, Point val) {
+  void set(const Key& key, Value val) {
     KdNode*& item_node = items_[key];
     if (item_node) {
       // The key already existed. Re-insert its node with the new value.
@@ -150,39 +131,38 @@ class ScapegoatKdMap {
     }
   }
 
-  template <typename DistanceType = EuclideanDistance<long double>>
-  NearestResult<DistanceType> nearest(const Point& val,
-                                      DistanceType max_distance = {}) const {
-    NearestResult<DistanceType> result(max_distance);
-    tree_search(val, *head_, 0, &result);
-    return result;
+  template <template <typename...> typename ST, typename... Apply,
+            typename... SearcherArgs>
+  auto search(SearcherArgs... args) const {
+    return search<ST<Key, Value, Statistic, Apply...>>(
+        std::forward<SearcherArgs>(args)...);
   }
 
-  template <typename DistanceType = EuclideanDistance<long double>>
-  std::vector<NearestResult<DistanceType>> nearest_n(
-      const Point& val, size_t n, DistanceType max_distance = {}) const {
-    std::vector<NearestResult<DistanceType>> result(n, {max_distance});
-    tree_search_n(val, *head_, 0, &result);
-    absl::c_sort_heap(result);
-    // Find out how many items we actually located, eliminating all those which
-    // are still empty at the end of our found set.
-    size_t i = n;
-    while (!result[i - 1].val) --i;
-    result.resize(i);
-    return result;
+  template <Searcher<Key, Value, Statistic> S, typename... SearcherArgs>
+  S search(SearcherArgs... args) const {
+    auto searcher = S(std::forward<SearcherArgs>(args)...);
+    searchWith(searcher);
+    return searcher;
+  }
+
+  template <Searcher<Key, Value, Statistic> S>
+  S& searchWith(S& searcher) const {
+    if (head_) {
+      tree_search(*head_, 0, &searcher);
+    }
+    return searcher;
   }
 
 #ifndef NDEBUG
   void validate() const {
-    size_t tree_nodes;
-    if (empty()) {
-      assert(!head_);
-      tree_nodes = 0;
+    if (!head_) {
+      assert(empty());
     } else {
+#ifndef KD_TREE_DEBUG_ONLY_BALANCE
       assert(!head_->parent);
-      Point lower, upper;
+      Value lower, upper;
       Dimension low, high;
-      if (std::numeric_limits<Dimension>::has_infinity) {
+      if constexpr (std::numeric_limits<Dimension>::has_infinity) {
         low = -std::numeric_limits<Dimension>::infinity();
         high = std::numeric_limits<Dimension>::infinity();
       } else {
@@ -191,14 +171,31 @@ class ScapegoatKdMap {
       }
       for (auto& d : lower) d = low;
       for (auto& d : upper) d = high;
-      tree_nodes = validate_node(*head_, 0, lower, upper);
-    }
-    assert(tree_nodes == items_.size());
-    if (MedianPolicy<KdNode>::kBalanceGuaranteed) {
-      assert(!head_ || tree_is_balanced(head_->height, size()));
+      assert(validate_node(*head_, 0, lower, upper) == items_.size());
+#endif  // !KD_TREE_DEBUG_ONLY_BALANCE
+      // We are never more than +1 out of total height balance.
+      //
+      // We cannot guarantee *complete* satisfaction of the tree balance at all
+      // times unless the tree is only modified by insertion. An insert-only
+      // tree only becomes unbalanced on insertion when the inserted node is the
+      // new deepest node in the tree, and then its subtree will be rebuilt
+      // shorter, bringing the whole tree back into balance.
+      //
+      // However, when a tree becomes unbalanced on deletion we only rebuild one
+      // of its deepest leaves' subtrees. Because there may be multiple
+      // imbalanced subtrees with leaves at the same depth over the maximum, the
+      // whole tree will only be shortened after one deletion for each of these
+      // dangling sub-trees; however, the number of nodes between steps of the
+      // tolerated maximum height is always greater than the number of
+      // individually unbalanced subtrees that can be over-height, so repeated
+      // deletions will get the balance back under control before the threshold
+      // shrinks again. Intermixed insertions cannot make the balance worse,
+      // since even if they end up at a depth 2 greater than the threshold, and
+      // after rebalance that subtree won't be taller than it was before.
+      assert(tree_is_balanced(head_->height - 1, size()));
     }
   }
-#endif
+#endif  // !NDEBUG
 
  private:
   struct KdNode {
@@ -211,68 +208,96 @@ class ScapegoatKdMap {
     std::unique_ptr<KdNode> left = nullptr;
     std::unique_ptr<KdNode> right = nullptr;
     Key key = {};
-    Point val = {};
+    Value val = {};
     Dimension mid = {};
     // Absolute height this subtree, including this node. (Always 1 or greater.)
-    uint32_t height = 0;
+    uint32_t height = 1;
+    [[no_unique_address]] Statistic stat = {};
 
-    KdNode(Key k, Point v) : key(std::move(k)), val(std::move(v)) {}
+    KdNode(Key k, Value v) : key(std::move(k)), val(std::move(v)) {}
     KdNode() = default;
+    KdNode(KdNode&&) = default;
+    KdNode& operator=(KdNode&&) noexcept = default;
+    KdNode(const KdNode&) = delete;
+    KdNode& operator=(const KdNode&) = delete;
     ~KdNode() = default;
+
+    Statistic make_stat() const {
+      if (left) {
+        if (right) {
+          return Statistic::combine(std::array{left->val, right->val},
+                                    std::array{left->stat, right->stat});
+        } else {
+          return Statistic::combine(std::array{left->val},
+                                    std::array{left->stat});
+        }
+      } else {
+        if (right) {
+          return Statistic::combine(std::array{right->val},
+                                    std::array{right->stat});
+        }
+      }
+      return {};
+    }
+
+    bool update_stats() {
+      auto new_height =
+          1 + std::max(left ? left->height : 0, right ? right->height : 0);
+      auto new_stat = make_stat();
+      if (std::tie(new_height, new_stat) == std::tie(height, stat)) {
+        return false;
+      } else {
+        height = new_height;
+        stat = new_stat;
+        return true;
+      }
+    }
   };
 
 #ifndef NDEBUG
-  size_t validate_node(const KdNode& node, const size_t dim, const Point& lower,
-                       const Point& upper) const {
+  size_t validate_node(const KdNode& node, const size_t dim, const Value& lower,
+                       const Value& upper) const {
     // Check key reference is correct
     assert(items_.find(node.key)->second == &node);
     // Check val is inside the bounds
     for (size_t i = 0; i < dims; ++i) {
-      assert(node.val[i] >= lower[i]);
-      assert(node.val[i] <= upper[i]);
+      assert(get_dimension(i, node.val) >= get_dimension(i, lower));
+      assert(get_dimension(i, node.val) <= get_dimension(i, upper));
     }
     // Check mid is inside the bounds
-    assert(node.mid >= lower[dim]);
-    assert(node.mid <= upper[dim]);
+    assert(node.mid >= get_dimension(dim, lower));
+    assert(node.mid <= get_dimension(dim, upper));
     // Check height is correct
     assert(node.height == 1 + std::max((node.left ? node.left->height : 0),
                                        (node.right ? node.right->height : 0)));
+    assert(node.stat == node.make_stat());
     // Check child parent pointers
     if (node.left) assert(node.left->parent == &node);
     if (node.right) assert(node.right->parent == &node);
     // Recurse
-    const size_t next_dim = dim == dims - 1 ? 0 : dim + 1;
+    const size_t next_dim = dim + 1 == dims ? 0 : dim + 1;
     size_t children = 0;
     if (node.left) {
-      Point new_upper = upper;
+      Value new_upper = upper;
       new_upper[dim] = node.mid;
       children += validate_node(*node.left, next_dim, lower, new_upper);
     }
     if (node.right) {
-      Point new_lower = lower;
+      Value new_lower = lower;
       new_lower[dim] = node.mid;
       children += validate_node(*node.right, next_dim, new_lower, upper);
     }
     return 1 + children;
   }
-#endif
+#endif  // !NDEBUG
 
   // Update the stats of the given node and its ancestors. The passed pointer
   // must never be null.
   // TODO(widders): consider queueing and deferring these updates?
-  static void revise_stats(KdNode* node) {
-    assert(node);
-    do {
-      auto new_height = 1 + std::max(node->left ? node->left->height : 0,
-                                     node->right ? node->right->height : 0);
-      if (node->height == new_height) {
-        return;
-      } else {
-        node->height = new_height;
-        node = node->parent;
-        continue;
-      }
-    } while (node);
+  static void revise_stats(KdNode* node, KdNode* until = nullptr) {
+    while (node != until && node->update_stats()) {
+      node = node->parent;
+    }
   }
 
   // Check each subtree starting from the given node, all the way up
@@ -304,7 +329,7 @@ class ScapegoatKdMap {
         *current_tree =
             rebuild_recursive(dim, collection.begin(), collection.end());
         (*current_tree)->parent = parent;
-        if (parent) revise_stats(parent);
+        revise_stats(parent);
         return;
       }
     }
@@ -320,11 +345,23 @@ class ScapegoatKdMap {
 
   using VecIter = typename std::vector<std::unique_ptr<KdNode>>::iterator;
 
+  template <typename Iter>
+  static Iter partition_at_median(Iter start, Iter end, int dim) {
+    auto middle = start + (end - start) / 2;
+    std::nth_element(
+        start, middle, end,
+        [dim](const Iter::reference a, const Iter::reference b) -> bool {
+          // Compare first on the point at dim; tiebreak with pointer value
+          return (std::tuple(get_dimension(dim, a->val), a.get()) <=>
+                  std::tuple(get_dimension(dim, b->val), b.get())) < 0;
+        });
+    return middle;
+  }
+
   static std::unique_ptr<KdNode> rebuild_recursive(size_t dim, VecIter start,
                                                    VecIter end) {
-    const size_t next_dim = dim == dims - 1 ? 0 : dim + 1;
-    const VecIter pivot =
-        MedianPolicy<KdNode>::PartitionAtMedian(start, end, dim);
+    const size_t next_dim = dim + 1 == dims ? 0 : dim + 1;
+    const VecIter pivot = partition_at_median(start, end, dim);
     std::unique_ptr<KdNode> node = std::move(*pivot);
     uint32_t left_depth, right_depth;
     if (start == pivot) {
@@ -347,7 +384,8 @@ class ScapegoatKdMap {
     }
     // Fix node's metadata
     node->height = 1 + std::max(left_depth, right_depth);
-    node->mid = node->val[dim];
+    node->stat = node->make_stat();
+    node->mid = get_dimension(dim, node->val);
     return node;
   }
 
@@ -391,7 +429,6 @@ class ScapegoatKdMap {
       } else {
         popped = std::move(popped_parent->right);
       }
-      revise_stats(popped_parent);
     } else {
       // We are popping the head of the tree.
       popped = std::move(head_);
@@ -409,8 +446,18 @@ class ScapegoatKdMap {
       // Swap the popped node's key and value into that same staying node.
       std::swap(node->key, popped->key);
       std::swap(node->val, popped->val);
+      // Statistics always need to be updated for nodes whose descendents have
+      // changed in any way. This includes the parents of the removed node and
+      // the node its value was swapped into.
+      // The removed node "popped" is below the updated node "node"; update the
+      // statistics on the path between them, and also from "node"'s parent up
+      // to the root.
+      revise_stats(popped_parent, node->parent);
+      revise_stats(node->parent);
+    } else {
+      // "poppped" and "node" are both the node that was popped off and removed.
+      revise_stats(popped_parent);
     }
-
     // Check for tree balance.
     if (head_ && !tree_is_balanced(head_->height, size())) {
       // If the tree is unbalanced after a removal, rebuild some ancestor of
@@ -418,26 +465,29 @@ class ScapegoatKdMap {
       rebuild_one_ancestor(deepest_leaf_of(head_.get()),
                            (head_->height - 1) % dims);
     }
+
     return popped;
   }
 
   // Insert the given node into the tree.
   void tree_insert_node(std::unique_ptr<KdNode> node) {
-    // Leaf nodes always have depth 1, and this node will be a leaf.
-    node->height = 1;
+    // We never need to set the height or stat of a node, because the node is
+    // guaranteed to either be a freshly constructed node or a former leaf.
     if (!head_) {
-      node->mid = node->val[0];
+      node->mid = get_dimension(0, node->val);
       node->parent = nullptr;
       head_ = std::move(node);
     } else {
-      const Point& val = node->val;
+      const Value& val = node->val;
       size_t dim = 0;
       KdNode* current = head_.get();
+      size_t insert_depth = 2;  // We will at least insert as a child of head_
       std::unique_ptr<KdNode>* destination;  // This is where we'll insert.
       while (true) {
         // Order by discriminant, or pointer when discriminant is equal
-        if (val[dim] == current->mid ? node.get() < current
-                                     : val[dim] < current->mid) {
+        auto sorted = std::tuple(get_dimension(dim, val), node.get()) <=>
+                      std::tuple(current->mid, current);
+        if (sorted < 0) {
           // val is to the left of the splitting plane.
           if (current->left) {
             // Traverse down to the child.
@@ -462,99 +512,173 @@ class ScapegoatKdMap {
         // the point value.
         dim++;
         if (dim == dims) dim = 0;
+        insert_depth++;
       }
       // Finish inserting node under current.
-      const size_t next_dim = dim == dims - 1 ? 0 : dim + 1;
-      node->mid = node->val[next_dim];
+      const size_t next_dim = dim + 1 == dims ? 0 : dim + 1;
+      node->mid = get_dimension(next_dim, node->val);
       node->parent = current;
       *destination = std::move(node);
-      revise_stats(current);
-      // Rebuild parts of the tree if necessary
-      if (!tree_is_balanced(head_->height, size()))
+      // Rebuild the subtree we inserted to if it is out of balance with the
+      // whole tree. This is not 100% guaranteed to put the whole tree into
+      // balance after one time if the tree is pathologically unbalanced, but it
+      // eventually will.
+      if (!tree_is_balanced(insert_depth, size())) {
         rebuild_one_ancestor(current, dim);
-    }
-  }
-
-  // Search the tree to find the nearest key/value to the given point.
-  template <typename DistanceType>
-  void tree_search(const Point& val, const KdNode& node, const size_t dim,
-                   NearestResult<DistanceType>* result) const {
-#ifdef KD_SEARCH_STATS
-    result.nodes_searched++;
-#endif
-    // Update best result.
-    if (result->distance.template ImproveDistance<dims>(val, node.val,
-                                                        node.key) == BETTER) {
-      result->key = node.key;
-      result->val = &node.val;
-    }
-    // Traverse downwards.
-    const size_t next_dim = dim == dims - 1 ? 0 : dim + 1;
-    auto distance_to_plane = node.mid - val[dim];
-    if (val[dim] < node.mid) {  // val is left of the splitting plane.
-      if (node.left) {
-        tree_search(val, *node.left, next_dim, result);
-      }
-      // Traverse to the other side if still needed.
-      if (node.right &&
-          result->distance.IntersectsPlane(distance_to_plane, dim)) {
-        tree_search(val, *node.right, next_dim, result);
-      }
-    } else {  // val is right of the splitting plane.
-      if (node.right) {
-        tree_search(val, *node.right, next_dim, result);
-      }
-      // Traverse to the other side if still needed.
-      if (node.left &&
-          result->distance.IntersectsPlane(distance_to_plane, dim)) {
-        tree_search(val, *node.left, next_dim, result);
+      } else {
+        revise_stats(current);
       }
     }
   }
 
   // Search the tree to find the nearest key/value to the given point.
-  template <typename DistanceType>
-  void tree_search_n(const Point& val, const KdNode& node, const size_t dim,
-                     std::vector<NearestResult<DistanceType>>* result) const {
-    NearestResult<DistanceType>& nth_best = *result->begin();
-    // Update best result.
-    if (nth_best.distance.template ImproveDistance<dims>(val, node.val,
-                                                         node.key) == BETTER) {
-      nth_best.key = node.key;
-      nth_best.val = &node.val;
-      // By replacing values in the root of the heap, then popping & pushing,
-      // that item is swapped to the back and then reinserted.
-      absl::c_pop_heap(*result);
-      absl::c_push_heap(*result);
+  template <Searcher<Key, Value, Statistic> S>
+  bool tree_search(const KdNode& node, const size_t dim, S* searcher) const {
+    searcher->visit(node.key, node.val);
+    if (!node.left && !node.right) return true;
+    using enum SearchDirection;
+    bool right_first = false;
+    bool looking_left = false;
+    bool looking_right = false;
+    switch (searcher->guide_search(node.mid, dim, Statistic{})) {
+      case SKIP:
+        return true;
+      case LOOK_LEFT: {
+        looking_left = true;
+        break;
+      }
+      case LOOK_RIGHT: {
+        right_first = true;
+        looking_right = true;
+        break;
+      }
+      case LOOK_LEFT_FIRST_BOTH: {
+        looking_left = true;
+        looking_right = true;
+        break;
+      }
+      case LOOK_RIGHT_FIRST_BOTH: {
+        right_first = true;
+        looking_left = true;
+        looking_right = true;
+        break;
+      }
+      case STOP_SEARCH:
+        return false;
     }
-
     // Traverse downwards.
-    const size_t next_dim = dim == dims - 1 ? 0 : dim + 1;
-    auto distance_to_plane = node.mid - val[dim];
-    if (val[dim] < node.mid) {  // val is left of the splitting plane.
-      if (node.left) {
-        tree_search_n(val, *node.left, next_dim, result);
+    const size_t next_dim = dim + 1 == dims ? 0 : dim + 1;
+    if (right_first) {
+      if (!node.right) {
+        // Only have left child
+        if (looking_left) {
+          return tree_search(*node.left, next_dim, searcher);
+        }
+      } else {
+        // Have right child
+        if (looking_right && !tree_search(*node.right, next_dim, searcher)) {
+          return false;
+        }
+        if (looking_left && node.left) {
+          // Have both children
+          if (looking_right && searcher->recheck()) {
+            // Recompute guidance if we already looked at some right children
+            switch (searcher->guide_search(node.mid, dim, Statistic{})) {
+              case LOOK_LEFT:
+              case LOOK_LEFT_FIRST_BOTH:
+              case LOOK_RIGHT_FIRST_BOTH:
+                return tree_search(*node.left, next_dim, searcher);
+              case STOP_SEARCH:
+                return false;
+              default:
+                return true;
+            }
+          } else {
+            return tree_search(*node.left, next_dim, searcher);
+          }
+        }
       }
-      // Traverse to the other side if still needed.
-      if (node.right &&
-          nth_best.distance.IntersectsPlane(distance_to_plane, dim)) {
-        tree_search_n(val, *node.right, next_dim, result);
-      }
-    } else {  // val is right of the splitting plane.
-      if (node.right) {
-        tree_search_n(val, *node.right, next_dim, result);
-      }
-      // Traverse to the other side if still needed.
-      if (node.left &&
-          nth_best.distance.IntersectsPlane(distance_to_plane, dim)) {
-        tree_search_n(val, *node.left, next_dim, result);
+    } else {
+      // Left first
+      if (!node.left) {
+        // Only have right child
+        if (looking_right) {
+          return tree_search(*node.right, next_dim, searcher);
+        }
+      } else {
+        // Have left child
+        if (looking_left && !tree_search(*node.left, next_dim, searcher)) {
+          return false;
+        }
+        if (looking_right && node.right) {
+          // Have both children
+          if (looking_left && searcher->recheck()) {
+            // Recompute guidance if we already looked at some left children
+            switch (searcher->guide_search(node.mid, dim, Statistic{})) {
+              case LOOK_RIGHT:
+              case LOOK_LEFT_FIRST_BOTH:
+              case LOOK_RIGHT_FIRST_BOTH:
+                return tree_search(*node.right, next_dim, searcher);
+              case STOP_SEARCH:
+                return false;
+              default:
+                return true;
+            }
+          } else {
+            return tree_search(*node.right, next_dim, searcher);
+          }
+        }
       }
     }
+    return true;
   }
 
   std::unique_ptr<KdNode> head_ = nullptr;
   absl::flat_hash_map<Key, KdNode*> items_;
-  const float max_height_factor_;
+};
+
+struct NoStatistic {
+  NoStatistic() = default;
+  NoStatistic(const NoStatistic&) = default;
+
+  template <typename Iter>
+  static NoStatistic combine(Iter stats) {
+    return {};
+  }
+
+  template <typename ValIter, typename StatIter>
+  static NoStatistic combine(ValIter values, StatIter stats) {
+    return {};
+  }
+
+  bool operator==(const NoStatistic& other) const { return true; }
+
+  char _[0];
+};
+
+struct OrderStatistic {
+  bool operator==(const OrderStatistic& other) const = default;
+
+  template <typename Iter>
+  static OrderStatistic combine(Iter stats) {
+    int sum = 0;
+    for (OrderStatistic os : stats) {
+      sum += os.value;
+    }
+    return OrderStatistic{sum};
+  }
+
+  template <typename ValIter, typename StatsIter>
+  static OrderStatistic combine(ValIter values, StatsIter stats) {
+    int sum = 0;
+    sum += values.size();
+    for (OrderStatistic os : stats) {
+      sum += os.value;
+    }
+    return OrderStatistic{sum};
+  }
+
+  int value = 0;
 };
 
 }  // namespace widders
