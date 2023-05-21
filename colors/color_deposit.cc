@@ -358,7 +358,7 @@ absl::variant<string, ColorOrder> ParseOrdering(const string& ordering_name) {
         ColorMetric metric;
         switch (order_class) {
           case RGB: {
-            metric = GetColorMetric("raw");
+            metric = GetColorMetric("srgb");
             break;
           }
           case LUV: {
