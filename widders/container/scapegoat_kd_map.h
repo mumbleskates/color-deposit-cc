@@ -1,10 +1,10 @@
 #ifndef WIDDERS_CONTAINER_SCAPEGOAT_KD_MAP_H_
 #define WIDDERS_CONTAINER_SCAPEGOAT_KD_MAP_H_
 
+#include <algorithm>
 #include <array>
 #include <cassert>
 #include <cmath>
-#include <compare>
 #include <cstddef>
 #include <limits>
 #include <memory>
@@ -641,11 +641,6 @@ struct NoStatistic {
   NoStatistic() = default;
   NoStatistic(const NoStatistic&) = default;
 
-  template <typename Iter>
-  static NoStatistic combine(Iter stats) {
-    return {};
-  }
-
   template <typename ValIter, typename StatIter>
   static NoStatistic combine(ValIter values, StatIter stats) {
     return {};
@@ -659,21 +654,11 @@ struct NoStatistic {
 struct OrderStatistic {
   bool operator==(const OrderStatistic& other) const = default;
 
-  template <typename Iter>
-  static OrderStatistic combine(Iter stats) {
-    int sum = 0;
-    for (OrderStatistic os : stats) {
-      sum += os.value;
-    }
-    return OrderStatistic{sum};
-  }
-
   template <typename ValIter, typename StatsIter>
   static OrderStatistic combine(ValIter values, StatsIter stats) {
     int sum = 0;
-    sum += values.size();
     for (OrderStatistic os : stats) {
-      sum += os.value;
+      sum += os.value + 1;
     }
     return OrderStatistic{sum};
   }
