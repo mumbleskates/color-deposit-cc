@@ -112,7 +112,7 @@ inline constexpr Color<Ch> XYZToLUV(const Color<Ch>& from) {
   constexpr Ch d65_y = 1.000;
   constexpr Ch d65_z = 1.073;
   constexpr Ch ref_U = (4.0 * d65_x) / (d65_x + 15.0 * d65_y + 3.0 * d65_z);
-  constexpr Ch ref_V = (9.0 * d65_x) / (d65_x + 15.0 * d65_y + 3.0 * d65_z);
+  constexpr Ch ref_V = (9.0 * d65_y) / (d65_x + 15.0 * d65_y + 3.0 * d65_z);
   Ch lab_y = detail::XYZChannelToLABChannel(y);
   Ch l = lab_y * Ch(116.0) + Ch(16.0);
   u = l * Ch(13.0) * (u - ref_U);
