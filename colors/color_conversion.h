@@ -4,7 +4,6 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <vector>
 
 using std::cbrt;
 using std::pow;
@@ -31,9 +30,9 @@ using Color = std::array<Ch, 3>;
 
 template <typename Ch>
 inline constexpr Color<Ch> ExtractSRGB(uint32_t srgb) {
-  return {{((srgb & 0x00ff0000U) >> 16U) / Ch(256.0),
-           ((srgb & 0x0000ff00U) >> 8U) / Ch(256.0),
-           (srgb & 0x000000ffU) / Ch(256.0)}};
+  return {{((srgb & 0x00ff0000U) >> 16U) / Ch(255.0),
+           ((srgb & 0x0000ff00U) >> 8U) / Ch(255.0),
+           (srgb & 0x000000ffU) / Ch(255.0)}};
 }
 
 template <typename Ch>
@@ -43,12 +42,16 @@ inline constexpr uint32_t RenderARGB(const Color<Ch>& from,
   const Ch& g = from[1];
   const Ch& b = from[2];
   return static_cast<uint32_t>(opacity << 24U) |
-         static_cast<uint32_t>(static_cast<u_char>(r * 256) << 16U) |
-         static_cast<uint32_t>(static_cast<u_char>(g * 256) << 8U) |
-         static_cast<uint32_t>(static_cast<u_char>(b * 256));
+         static_cast<uint32_t>(static_cast<u_char>(r * 255) << 16U) |
+         static_cast<uint32_t>(static_cast<u_char>(g * 255) << 8U) |
+         static_cast<uint32_t>(static_cast<u_char>(b * 255));
 }
 
 static_assert(RenderARGB(ExtractSRGB<double>(0x123456), 0) == 0x123456,
+              "RenderARGB and ExtractSRGB should be inverse");
+static_assert(RenderARGB(ExtractSRGB<double>(0x0077ff), 0) == 0x0077ff,
+              "RenderARGB and ExtractSRGB should be inverse");
+static_assert(RenderARGB(ExtractSRGB<double>(0xabcdef), 0) == 0xabcdef,
               "RenderARGB and ExtractSRGB should be inverse");
 
 inline constexpr uint32_t RenderABGR(uint32_t int_srgb, u_char opacity = 0xff) {
@@ -93,9 +96,9 @@ inline constexpr Color<Ch> XYZToLAB(const Color<Ch>& from) {
 
 template <typename Ch>
 inline constexpr Color<Ch> XYZToLUV(const Color<Ch>& from) {
-  Ch x = detail::XYZChannelToLABChannel(from[0]);
-  Ch y = detail::XYZChannelToLABChannel(from[1]);
-  Ch z = detail::XYZChannelToLABChannel(from[2]);
+  Ch x = from[0];
+  Ch y = from[1];
+  Ch z = from[2];
   Ch denom = x + Ch(15.0) * y + Ch(3.0) * z;
   Ch u, v;
   if (denom == Ch(0.0)) {
@@ -105,10 +108,15 @@ inline constexpr Color<Ch> XYZToLUV(const Color<Ch>& from) {
     u = Ch(4.0) * x / denom;
     v = Ch(9.0) * y / denom;
   }
+  constexpr Ch d65_x = 0.9481;
+  constexpr Ch d65_y = 1.000;
+  constexpr Ch d65_z = 1.073;
+  constexpr Ch ref_U = (4.0 * d65_x) / (d65_x + 15.0 * d65_y + 3.0 * d65_z);
+  constexpr Ch ref_V = (9.0 * d65_x) / (d65_x + 15.0 * d65_y + 3.0 * d65_z);
   Ch lab_y = detail::XYZChannelToLABChannel(y);
   Ch l = lab_y * Ch(116.0) + Ch(16.0);
-  u = l * Ch(13.0) * (u - Ch(4.0 / 19.0));
-  v = l * Ch(13.0) * (v - Ch(9.0 / 19.0));
+  u = l * Ch(13.0) * (u - ref_U);
+  v = l * Ch(13.0) * (v - ref_V);
   return {{l, u, v}};
 }
 
