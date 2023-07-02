@@ -50,8 +50,11 @@ class ScapegoatKdMap {
     // maintain is 1 for a tree with no children, for simplicity; this is 1 more
     // than the "height" of a tree in the literature, but it also means an empty
     // tree has a different height than a tree with 1 node.
-    return height <=
-           2 + static_cast<uint32_t>(
+    return height <= height_budget(node_count);
+  }
+
+  inline uint32_t height_budget(size_t node_count) const {
+    return 1 + static_cast<uint32_t>(
                    std::log2f(static_cast<float>(node_count)) *
                    static_cast<float>(static_cast<double>(balance_ratio::num) /
                                       static_cast<double>(balance_ratio::den)));
@@ -192,7 +195,7 @@ class ScapegoatKdMap {
       // shrinks again. Intermixed insertions cannot make the balance worse,
       // since even if they end up at a depth 2 greater than the threshold, and
       // after rebalance that subtree won't be taller than it was before.
-      assert(tree_is_balanced(head_->height - 1, size()));
+      assert(head_->height <= height_budget(size()) + 1);
     }
   }
 #endif  // !NDEBUG
@@ -210,8 +213,7 @@ class ScapegoatKdMap {
     Key key = {};
     Value val = {};
     Dimension mid = {};
-    // Absolute height this subtree, including this node. (Always 1 or greater.)
-    uint32_t height = 1;
+    uint32_t height = 0; // Distance from this node to its lowest leaf
     [[no_unique_address]] Statistic stat = {};
 
     KdNode(Key k, Value v) : key(std::move(k)), val(std::move(v)) {}
@@ -242,7 +244,7 @@ class ScapegoatKdMap {
 
     bool update_stats() {
       auto new_height =
-          1 + std::max(left ? left->height : 0, right ? right->height : 0);
+          std::max(left ? left->height + 1 : 0, right ? right->height + 1 : 0);
       auto new_stat = make_stat();
       if (std::tie(new_height, new_stat) == std::tie(height, stat)) {
         return false;
@@ -268,8 +270,8 @@ class ScapegoatKdMap {
     assert(node.mid >= get_dimension(dim, lower));
     assert(node.mid <= get_dimension(dim, upper));
     // Check height is correct
-    assert(node.height == 1 + std::max((node.left ? node.left->height : 0),
-                                       (node.right ? node.right->height : 0)));
+    assert(node.height == std::max((node.left ? node.left->height + 1 : 0),
+                                   (node.right ? node.right->height + 1 : 0)));
     assert(node.stat == node.make_stat());
     // Check child parent pointers
     if (node.left) assert(node.left->parent == &node);
@@ -370,7 +372,7 @@ class ScapegoatKdMap {
       std::unique_ptr<KdNode> left_child =
           rebuild_recursive(next_dim, start, pivot);
       left_child->parent = node.get();
-      left_depth = left_child->height;
+      left_depth = left_child->height + 1;
       node->left = std::move(left_child);
     }
     if (pivot + 1 == end) {
@@ -379,11 +381,11 @@ class ScapegoatKdMap {
       std::unique_ptr<KdNode> right_child =
           rebuild_recursive(next_dim, pivot + 1, end);
       right_child->parent = node.get();
-      right_depth = right_child->height;
+      right_depth = right_child->height + 1;
       node->right = std::move(right_child);
     }
     // Fix node's metadata
-    node->height = 1 + std::max(left_depth, right_depth);
+    node->height = std::max(left_depth, right_depth);
     node->stat = node->make_stat();
     node->mid = get_dimension(dim, node->val);
     return node;
@@ -392,7 +394,7 @@ class ScapegoatKdMap {
   static KdNode* deepest_leaf_of(KdNode* const node) {
     KdNode* current = node;
     // Traverse down the deeper branch until we reach a leaf.
-    while (current->height > 1) {
+    while (current->height > 0) {
       // Prefer to pick the rightmost deep leaf.
       if (current->right && current->right->height == current->height - 1) {
         // Right subtree exists and is at least as deep as the left.
@@ -462,8 +464,7 @@ class ScapegoatKdMap {
     if (head_ && !tree_is_balanced(head_->height, size())) {
       // If the tree is unbalanced after a removal, rebuild some ancestor of
       // the deepest leaf in the tree.
-      rebuild_one_ancestor(deepest_leaf_of(head_.get()),
-                           (head_->height - 1) % dims);
+      rebuild_one_ancestor(deepest_leaf_of(head_.get()), head_->height % dims);
     }
 
     return popped;
@@ -481,7 +482,7 @@ class ScapegoatKdMap {
       const Value& val = node->val;
       size_t dim = 0;
       KdNode* current = head_.get();
-      size_t insert_depth = 2;  // We will at least insert as a child of head_
+      size_t insert_depth = 1;  // We will at least insert as a child of head_
       std::unique_ptr<KdNode>* destination;  // This is where we'll insert.
       while (true) {
         // Order by discriminant, or pointer when discriminant is equal
