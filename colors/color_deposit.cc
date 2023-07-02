@@ -51,6 +51,11 @@ ABSL_FLAG(
     "'center' for the center of the image, 'random' for a random location, "
     "'x,y' with exact integer pixel coordinates, or 'x.xx%,y.yy%' for floating "
     "point percentage coordinates relative to the size of the image.");
+ABSL_FLAG(
+    bool, legacy_stale_diagonals, false,
+    "Enable a long-standing, technically-buggy behavior where frontier pixels "
+    "that were diagonal of a newly-placed pixel did not get updated with a "
+    "new color average.");
 // TODO(widders): dimensions: square, tall, wide
 // TODO(widders): try out slightly fuzzing choice of best placement
 //  (cheapening lookup)
@@ -131,26 +136,19 @@ using ColorMap = widders::ScapegoatKdMap<Position, Color, widders::NoStatistic,
 using ColorPair = std::pair<uint32_t, Color>;
 using ColorMetric = std::function<Color(uint32_t int_srgb)>;
 
-// Offsets from any occupied pixel to any unoccupied pixel that is valid for
-// placement.
-constexpr Position kFrontierOffsets[] = {
-    {.x = -1, .y = 0},  //
-    {.x = 0, .y = -1},  //
-    {.x = 1, .y = 0},   //
-    {.x = 0, .y = 1},   //
-};
-// Sampling convolution; (offset, weight) pairs that are summed together for all
-// occupied pixels near a frontier pixel that determine its 'neighboring' color
-// value, and thus the color value that would most like to be placed there.
-const std::pair<Position, Field> kSamples[] = {
-    {{.x = -1, .y = +0}, 1},                 //
-    {{.x = -1, .y = -1}, 1 / std::sqrt(2)},  //
-    {{.x = +0, .y = -1}, 1},                 //
-    {{.x = +1, .y = -1}, 1 / std::sqrt(2)},  //
-    {{.x = +1, .y = +0}, 1},                 //
-    {{.x = +1, .y = +1}, 1 / std::sqrt(2)},  //
-    {{.x = +0, .y = +1}, 1},                 //
-    {{.x = -1, .y = +1}, 1 / std::sqrt(2)},  //
+// Sampling convolution; (offset, weight, placeable) tuples. Weights and colors
+// of already-placed pixels are summed together for all pixels that are a
+// placeable offset fromn already-placed pixel (so, on the frontier) and the
+// resulting color value is the color that would most like to be placed there.
+const std::tuple<Position, Field, bool> kSamplingOffsets[] = {
+    {{.x = -1, .y = +0}, 1, true},                  //
+    {{.x = -1, .y = -1}, 1 / std::sqrt(2), false},  //
+    {{.x = +0, .y = -1}, 1, true},                  //
+    {{.x = +1, .y = -1}, 1 / std::sqrt(2), false},  //
+    {{.x = +1, .y = +0}, 1, true},                  //
+    {{.x = +1, .y = +1}, 1 / std::sqrt(2), false},  //
+    {{.x = +0, .y = +1}, 1, true},                  //
+    {{.x = -1, .y = +1}, 1 / std::sqrt(2), false},  //
 };
 
 // A pair of functions for generating and then (if necessary) reordering colors
@@ -573,6 +571,8 @@ int main(int argc, char* argv[]) {
       };
   Progress progress(progress_options);
 
+  const bool stale_diagonals = absl::GetFlag(FLAGS_legacy_stale_diagonals);
+
   // Create initial frontier.
   frontier.set(origin, Color());
   // Repeatedly place a pixel in the image, updating the frontier set and all
@@ -594,17 +594,26 @@ int main(int argc, char* argv[]) {
     const auto& [pos, val] = result;
     frontier.erase(pos);
     image[pos] = static_cast<uint32_t>(i);
-    for (const Position& f_delta : kFrontierOffsets) {
-      Position frontier_pos = pos + f_delta;
+    for (const auto& [f_delta, _, placeable] : kSamplingOffsets) {
+      if (stale_diagonals && !placeable) continue;
+      const Position frontier_pos = pos + f_delta;
       // Do nothing if this is not an empty frontier point.
       if (!image.InBounds(frontier_pos) || image[frontier_pos] != kEmpty) {
         continue;
       }
-      // Sum surrounding points for the new value of this frontier.
+      // If frontier_pos is not placeable as a neighbor of the current pixel
+      // and hasn't already been added to the frontier as a neighbor of another,
+      // don't add it to the frontier set.
+      if (!placeable && !frontier.contains(frontier_pos)) {
+        continue;
+      }
+      // From this point, frontier_pos is either an existing or to-be-added
+      // pixel in the frontier. Sum its surrounding points for the new value of
+      // the color there.
       auto new_mean = Color();
       Field total_weight = 0;
-      for (const auto& [s_delta, sample_weight] : kSamples) {
-        Position sample_pos = frontier_pos + s_delta;
+      for (const auto& [s_delta, sample_weight, _] : kSamplingOffsets) {
+        const Position sample_pos = frontier_pos + s_delta;
         if (!image.InBounds(sample_pos)) continue;
         const uint32_t sample_idx = image[sample_pos];
         // Sum values of non-empty neighbors into new_mean.
