@@ -44,16 +44,12 @@ class ScapegoatKdMap {
 
   // TODO(widders): maybe memoize
   inline bool tree_is_balanced(uint32_t height, size_t node_count) const {
-    // 2 + (implicit) floor of (log2 of tree node count multiplied by the
-    //                               height balance we maintain)
-    // We add 2 instead of just 1 because the tree "height" statistic we
-    // maintain is 1 for a tree with no children, for simplicity; this is 1 more
-    // than the "height" of a tree in the literature, but it also means an empty
-    // tree has a different height than a tree with 1 node.
     return height <= height_budget(node_count);
   }
 
   inline uint32_t height_budget(size_t node_count) const {
+    // 1 + (implicit) floor of (log2 of tree node count multiplied by the
+    //                               height balance we maintain)
     return 1 + static_cast<uint32_t>(
                    std::log2f(static_cast<float>(node_count)) *
                    static_cast<float>(static_cast<double>(balance_ratio::num) /
@@ -95,7 +91,7 @@ class ScapegoatKdMap {
   // Returns true if the key is in the tree, false otherwise.
   // Takes O(1) time.
   bool contains(const Key& key) const { return items_.contains(key); }
-  // Return the height of the tree: the number of nodes that must be
+  // Return the height of the tree: the number of edges that must be
   // traversed to reach the deepest node in the tree.
   size_t height() const { return head_->height; }
 
@@ -520,7 +516,7 @@ class ScapegoatKdMap {
       node->mid = get_dimension(next_dim, node->val);
       node->parent = current;
       *destination = std::move(node);
-      // Rebuild the subtree we inserted to if it is out of balance with the
+      // Rebuild the subtree we inserted into if it is out of balance with the
       // whole tree. This is not 100% guaranteed to put the whole tree into
       // balance after one time if the tree is pathologically unbalanced, but it
       // eventually will.
